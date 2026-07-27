@@ -1,4 +1,4 @@
-// Verilator 4.x-compatible Alex endpoint smoke test.
+// Compatibility smoke test for the Alex endpoint on older simulator builds.
 //
 // There are no #delays, initial event controls, or cocotb/DPI calls here.
 // The C++ harness owns the clock and advances one rising edge per iteration.
