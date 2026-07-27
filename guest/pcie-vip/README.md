@@ -68,6 +68,18 @@ The expected DMA result is:
 PCIE-VIP DMA/MSI-X PASS
 ```
 
+The test app also supports an interactive/configurable mode:
+
+```sh
+pcie-vip-run --help
+pcie-vip-run --length 4096 --iterations 10 --verbose
+pcie-vip-run --interactive
+```
+
+Verbose mode reports payload size, completed iterations, elapsed time,
+round-trip bytes, and throughput. The default no-argument invocation remains
+compatible with the CI check.
+
 Raw BAR access should be performed while `pcie_vip` is not bound.  The DMA
 and MSI-X test must use the driver because it needs a kernel-owned DMA
 address and an interrupt handler.

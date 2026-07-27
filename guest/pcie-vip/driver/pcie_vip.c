@@ -6,6 +6,7 @@
 #include <linux/fs.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/ktime.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -36,7 +37,7 @@
 #define VIP_CSTS_RDY BIT(0)
 #define VIP_AQA_VALUE ((31U << 16) | 31U)
 
-#define PCIE_VIP_IOC_RUN _IO('V', 0)
+#include "pcie_vip_uapi.h"
 
 struct pcie_vip_dev {
 	struct pci_dev *pdev;
@@ -77,41 +78,49 @@ static irqreturn_t pcie_vip_irq(int irq, void *opaque)
 	return IRQ_HANDLED;
 }
 
-static int pcie_vip_run(struct pcie_vip_dev *vip)
+static int pcie_vip_run_config(struct pcie_vip_dev *vip,
+				       struct pcie_vip_run_config *cfg)
 {
-	unsigned int i;
+	unsigned int i, iter;
 	unsigned long timeout;
 	int ret = 0;
 	struct pcie_vip_dma_desc *desc = NULL;
 	struct pcie_vip_dma_cpl *cpl = NULL;
 	void *src = NULL, *dst = NULL;
 	dma_addr_t desc_dma, cpl_dma, src_dma, dst_dma;
+	u64 start_ns;
+	u32 length = cfg->length ? cfg->length : 64;
+	u32 iterations = cfg->iterations ? cfg->iterations : 1;
+	u32 tail = 0;
+
+	if (length == 0 || length > 4096 || iterations == 0 || iterations > 1024)
+		return -EINVAL;
 
 	desc = dma_alloc_coherent(&vip->pdev->dev, 2 * sizeof(*desc),
 				  &desc_dma, GFP_KERNEL);
 	cpl = dma_alloc_coherent(&vip->pdev->dev, 2 * sizeof(*cpl),
-				&cpl_dma, GFP_KERNEL);
-	src = dma_alloc_coherent(&vip->pdev->dev, 64, &src_dma, GFP_KERNEL);
-	dst = dma_alloc_coherent(&vip->pdev->dev, 64, &dst_dma, GFP_KERNEL);
+					&cpl_dma, GFP_KERNEL);
+	src = dma_alloc_coherent(&vip->pdev->dev, length, &src_dma, GFP_KERNEL);
+	dst = dma_alloc_coherent(&vip->pdev->dev, length, &dst_dma, GFP_KERNEL);
 	if (!desc || !cpl || !src || !dst) {
 		ret = -ENOMEM;
 		goto free_dma;
 	}
 
 	mutex_lock(&vip->run_lock);
-	memset(cpl, 0, 2 * sizeof(*cpl));
-	memset(dst, 0, 64);
-	for (i = 0; i < 64; ++i)
-		((u8 *)src)[i] = 0xa0 + i;
+	start_ns = ktime_get_ns();
+	cfg->completed = 0;
+	cfg->last_status = 0;
+	cfg->elapsed_ns = 0;
 	memset(desc, 0, 2 * sizeof(*desc));
 	desc[0].host_addr = cpu_to_le64(src_dma);
 	desc[0].ram_addr = cpu_to_le32(0);
-	desc[0].length = cpu_to_le16(64);
+	desc[0].length = cpu_to_le16(length);
 	desc[0].opcode = 0;
 	desc[0].tag = cpu_to_le32(0x100);
 	desc[1].host_addr = cpu_to_le64(dst_dma);
 	desc[1].ram_addr = cpu_to_le32(0);
-	desc[1].length = cpu_to_le16(64);
+	desc[1].length = cpu_to_le16(length);
 	desc[1].opcode = 1;
 	desc[1].flags = 1;
 	desc[1].tag = cpu_to_le32(0x101);
@@ -123,46 +132,64 @@ static int pcie_vip_run(struct pcie_vip_dev *vip)
 	iowrite32(2, vip->bar0 + VIP_DMA_DESC_COUNT);
 	iowrite32(1, vip->bar0 + VIP_DMA_CONTROL);
 
-	for (i = 0; i < 50; ++i) {
-		if (ioread32(vip->bar0 + VIP_DMA_STATUS) == 0)
-			break;
-		msleep(1);
-	}
-	if (i == 50) {
-		ret = -ETIMEDOUT;
-		goto out;
-	}
-
-	reinit_completion(&vip->irq_done);
-	iowrite32(2, vip->bar0 + VIP_DMA_DESC_TAIL);
-	timeout = wait_for_completion_timeout(&vip->irq_done, 5 * HZ);
-	if (!timeout) {
-		ret = -ETIMEDOUT;
-		goto out;
-	}
-	for (i = 0; i < 64; ++i) {
-		if (((u8 *)dst)[i] != (u8)(0xa0 + i)) {
-			ret = -EIO;
-			break;
+	for (iter = 0; iter < iterations; ++iter) {
+		memset(cpl, 0, 2 * sizeof(*cpl));
+		memset(dst, 0, length);
+		for (i = 0; i < length; ++i)
+			((u8 *)src)[i] = 0xa0 + (i & 0x3f);
+		for (i = 0; i < 50; ++i) {
+			if (ioread32(vip->bar0 + VIP_DMA_STATUS) == 0)
+				break;
+			msleep(1);
 		}
+		if (i == 50) {
+			ret = -ETIMEDOUT;
+			goto out;
+		}
+		reinit_completion(&vip->irq_done);
+		tail += 2;
+		iowrite32(tail, vip->bar0 + VIP_DMA_DESC_TAIL);
+		timeout = wait_for_completion_timeout(&vip->irq_done, 5 * HZ);
+		if (!timeout) {
+			ret = -ETIMEDOUT;
+			goto out;
+		}
+		for (i = 0; i < length; ++i) {
+			if (((u8 *)dst)[i] != (u8)(0xa0 + (i & 0x3f))) {
+				ret = -EIO;
+				goto out;
+			}
+		}
+		if (le32_to_cpu(cpl[0].tag) != 0x100 || le16_to_cpu(cpl[0].status) != 0 ||
+		    le32_to_cpu(cpl[0].bytes) != length || le32_to_cpu(cpl[1].tag) != 0x101 ||
+		    le16_to_cpu(cpl[1].status) != 0 || le32_to_cpu(cpl[1].bytes) != length) {
+			ret = -EIO;
+			goto out;
+		}
+		cfg->completed = iter + 1;
 	}
-	if (le32_to_cpu(cpl[0].tag) != 0x100 || le16_to_cpu(cpl[0].status) != 0 ||
-	    le32_to_cpu(cpl[0].bytes) != 64 || le32_to_cpu(cpl[1].tag) != 0x101 ||
-	    le16_to_cpu(cpl[1].status) != 0 || le32_to_cpu(cpl[1].bytes) != 64)
-		ret = -EIO;
 out:
+	cfg->elapsed_ns = ktime_get_ns() - start_ns;
+	cfg->last_status = ret ? (u32)(-ret) : 0;
 	mutex_unlock(&vip->run_lock);
 
 free_dma:
 	if (dst)
-		dma_free_coherent(&vip->pdev->dev, 64, dst, dst_dma);
+		dma_free_coherent(&vip->pdev->dev, length, dst, dst_dma);
 	if (src)
-		dma_free_coherent(&vip->pdev->dev, 64, src, src_dma);
+		dma_free_coherent(&vip->pdev->dev, length, src, src_dma);
 	if (cpl)
 		dma_free_coherent(&vip->pdev->dev, 2 * sizeof(*cpl), cpl, cpl_dma);
 	if (desc)
 		dma_free_coherent(&vip->pdev->dev, 2 * sizeof(*desc), desc, desc_dma);
 	return ret;
+}
+
+static int pcie_vip_run(struct pcie_vip_dev *vip)
+{
+	struct pcie_vip_run_config cfg = { .length = 64, .iterations = 1 };
+
+	return pcie_vip_run_config(vip, &cfg);
 }
 
 static long pcie_vip_ioctl(struct file *file, unsigned int cmd,
@@ -171,9 +198,21 @@ static long pcie_vip_ioctl(struct file *file, unsigned int cmd,
 	struct miscdevice *misc = file->private_data;
 	struct pcie_vip_dev *vip = container_of(misc, struct pcie_vip_dev, misc);
 
-	if (cmd != PCIE_VIP_IOC_RUN)
-		return -ENOTTY;
-	return pcie_vip_run(vip);
+	if (cmd == PCIE_VIP_IOC_RUN)
+		return pcie_vip_run(vip);
+	if (cmd == PCIE_VIP_IOC_RUN_CONFIG) {
+		struct pcie_vip_run_config cfg;
+		int ret;
+
+		if (copy_from_user(&cfg, (void __user *)arg, sizeof(cfg)))
+			return -EFAULT;
+		ret = pcie_vip_run_config(vip, &cfg);
+
+		if (copy_to_user((void __user *)arg, &cfg, sizeof(cfg)))
+			return -EFAULT;
+		return ret;
+	}
+	return -ENOTTY;
 }
 
 static const struct file_operations pcie_vip_fops = {
