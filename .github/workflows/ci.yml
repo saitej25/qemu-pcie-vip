@@ -82,7 +82,10 @@ jobs:
           # The submodule gitlink is already pinned to the reviewed QEMU
           # v11.0.3 baseline; applying the patch directly also works with
           # Actions' shallow submodule checkout (where the tag may be absent).
+          git -C qemu apply --check ../patches/qemu-pcie-vip.patch
           git -C qemu apply ../patches/qemu-pcie-vip.patch
+          test -f qemu/hw/misc/pcie-vip.c
+          test -f qemu/docs/specs/pcie-vip.rst
           mkdir -p qemu/build
           cd qemu/build
           ../configure --target-list=x86_64-softmmu --disable-werror --disable-docs

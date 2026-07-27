@@ -25,11 +25,11 @@ index 092f70b..c748a09 100644
  system_ss.add(when: 'CONFIG_FW_CFG_DMA', if_true: files('vmcoreinfo.c'))
  system_ss.add(when: 'CONFIG_ISA_DEBUG', if_true: files('debugexit.c'))
  system_ss.add(when: 'CONFIG_ISA_TESTDEV', if_true: files('pc-testdev.c'))
-diff --git a/qemu/docs/specs/pcie-vip.rst b/qemu/docs/specs/pcie-vip.rst
+diff --git a/docs/specs/pcie-vip.rst b/docs/specs/pcie-vip.rst
 new file mode 100644
 index 0000000..c60a827
 --- /dev/null
-+++ b/qemu/docs/specs/pcie-vip.rst
++++ b/docs/specs/pcie-vip.rst
 @@ -0,0 +1,22 @@
 +QEMU PCIe VIP
 +============
@@ -53,11 +53,11 @@ index 0000000..c60a827
 +
 +QEMU validates guest-visible PCI behavior only.  PHY, LTSSM, DLLP, and lane
 +training remain out of scope and should be exercised with cocotbext-pcie.
-diff --git a/qemu/hw/misc/pcie-vip.c b/qemu/hw/misc/pcie-vip.c
+diff --git a/hw/misc/pcie-vip.c b/hw/misc/pcie-vip.c
 new file mode 100644
 index 0000000..5a23d10
 --- /dev/null
-+++ b/qemu/hw/misc/pcie-vip.c
++++ b/hw/misc/pcie-vip.c
 @@ -0,0 +1,792 @@
 +/*
 + * Standalone PCIe verification endpoint backed by the Mini ICS protocol.
