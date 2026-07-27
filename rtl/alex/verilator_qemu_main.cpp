@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <algorithm>
 #include <string>
 #include <thread>
 #include <vector>
@@ -40,6 +41,121 @@ public:
         return true;
     }
     void Reset() { top_->rst=1; for (int i=0;i<4;++i) Tick(); top_->rst=0; }
+    void InitDmaPorts() {
+        top_->dma_read_desc_valid = 0;
+        top_->dma_read_desc_pcie_addr = 0;
+        top_->dma_read_desc_ram_addr = 0;
+        top_->dma_read_desc_len = 0;
+        top_->dma_read_desc_tag = 0;
+        top_->dma_write_desc_valid = 0;
+        top_->dma_write_desc_pcie_addr = 0;
+        top_->dma_write_desc_ram_addr = 0;
+        top_->dma_write_desc_len = 0;
+        top_->dma_write_desc_tag = 0;
+        top_->dma_rd_req_ready = 1;
+        top_->dma_wr_req_ready = 1;
+        top_->dma_rx_cpl_valid = 0;
+        top_->dma_rx_cpl_sop = 0;
+        top_->dma_rx_cpl_eop = 0;
+        top_->dma_rx_cpl_error = 0;
+        top_->dma_rx_cpl_hdr_lo = top_->dma_rx_cpl_hdr_hi = 0;
+        top_->dma_rx_cpl_data0 = top_->dma_rx_cpl_data1 = 0;
+        top_->dma_rx_cpl_data2 = top_->dma_rx_cpl_data3 = 0;
+    }
+    void SendCompletion(uint8_t tag, uint16_t byte_count, uint8_t lower_addr,
+                        const std::vector<uint8_t>& data, uint32_t offset,
+                        uint32_t length, bool error) {
+        uint64_t hdr_lo = 0, hdr_hi = 0;
+        hdr_hi |= uint64_t(0x4a) << 56; // fmt=3DW+data, type=Completion
+        hdr_hi |= uint64_t(length / 4) << 32;
+        hdr_lo |= uint64_t(byte_count) & 0xfff;
+        hdr_lo |= uint64_t(tag) << 40;
+        hdr_lo |= uint64_t(lower_addr & 0x7f) << 32;
+        if (error) hdr_hi |= uint64_t(1) << 13;
+        top_->dma_rx_cpl_hdr_hi = hdr_hi;
+        top_->dma_rx_cpl_hdr_lo = hdr_lo;
+        uint64_t words[4] = {0, 0, 0, 0};
+        for (uint32_t i = 0; i < length && i < 32; ++i)
+            words[i / 8] |= uint64_t(data[offset + i]) << (8 * (i % 8));
+        top_->dma_rx_cpl_data0 = words[0]; top_->dma_rx_cpl_data1 = words[1];
+        top_->dma_rx_cpl_data2 = words[2]; top_->dma_rx_cpl_data3 = words[3];
+        top_->dma_rx_cpl_valid = 1;
+        top_->dma_rx_cpl_sop = 1;
+        top_->dma_rx_cpl_eop = 1;
+        Tick();
+        top_->dma_rx_cpl_valid = 0;
+        top_->dma_rx_cpl_sop = 0;
+        top_->dma_rx_cpl_eop = 0;
+    }
+    bool DmaRead(MiniIcsServer& server, uint64_t address, uint16_t ram_addr,
+                 uint16_t length, uint8_t tag, uint64_t sim_time) {
+        top_->dma_read_desc_pcie_addr = address;
+        top_->dma_read_desc_ram_addr = ram_addr;
+        top_->dma_read_desc_len = length;
+        top_->dma_read_desc_tag = tag;
+        top_->dma_read_desc_valid = 1;
+        bool accepted = false;
+        for (int i = 0; i < 1000; ++i) {
+            Tick();
+            if (top_->dma_read_desc_ready) { accepted = true; break; }
+        }
+        top_->dma_read_desc_valid = 0;
+        if (!accepted) return false;
+        for (int i = 0; i < 2000; ++i) {
+            Tick();
+            if (top_->dma_rd_req_valid) {
+                const uint16_t req_len = top_->dma_rd_req_len;
+                auto rsp = server.SendRequestToHost(MessageType::kDmaReadReq,
+                                                     top_->dma_rd_req_addr, 0, {},
+                                                     req_len, sim_time, true);
+                std::vector<uint8_t> payload = rsp ? rsp->payload : std::vector<uint8_t>{};
+                bool error = !rsp || rsp->header.Status() != StatusCode::kSuccess;
+                uint32_t sent = 0;
+                while (!error && sent < req_len) {
+                    uint32_t chunk = std::min<uint32_t>(32, req_len - sent);
+                    SendCompletion(tag, req_len - sent,
+                                   uint8_t((top_->dma_rd_req_addr + sent) & 0x7f),
+                                   payload, sent, chunk, false);
+                    sent += chunk;
+                }
+                if (error) SendCompletion(tag, 0, 0, {}, 0, 0, true);
+            }
+            if (top_->dma_read_status_valid) return top_->dma_read_status_error == 0;
+        }
+        return false;
+    }
+    bool DmaWrite(MiniIcsServer& server, uint64_t address, uint16_t ram_addr,
+                  uint16_t length, uint8_t tag, uint64_t sim_time) {
+        top_->dma_write_desc_pcie_addr = address;
+        top_->dma_write_desc_ram_addr = ram_addr;
+        top_->dma_write_desc_len = length;
+        top_->dma_write_desc_tag = tag;
+        top_->dma_write_desc_valid = 1;
+        bool accepted = false;
+        for (int i = 0; i < 1000; ++i) {
+            Tick();
+            if (top_->dma_write_desc_ready) { accepted = true; break; }
+        }
+        top_->dma_write_desc_valid = 0;
+        if (!accepted) return false;
+        for (int i = 0; i < 2000; ++i) {
+            Tick();
+            if (top_->dma_wr_req_valid) {
+                const uint16_t req_len = top_->dma_wr_req_len;
+                std::vector<uint8_t> payload(req_len, 0);
+                uint64_t words[4] = {top_->dma_wr_req_data0, top_->dma_wr_req_data1,
+                                     top_->dma_wr_req_data2, top_->dma_wr_req_data3};
+                for (uint32_t j = 0; j < req_len && j < 32; ++j)
+                    payload[j] = uint8_t(words[j / 8] >> (8 * (j % 8)));
+                auto rsp = server.SendRequestToHost(MessageType::kDmaWriteReq,
+                                                     top_->dma_wr_req_addr, 0, payload,
+                                                     req_len, sim_time, true);
+                if (!rsp || rsp->header.Status() != StatusCode::kSuccess) return false;
+            }
+            if (top_->dma_write_status_valid) return top_->dma_write_status_error == 0;
+        }
+        return false;
+    }
     uint64_t sim_time() const { return sim_time_; }
     bool doorbell_seen() const { return doorbell_seen_; }
     void clear_doorbell() { doorbell_seen_=false; }
@@ -73,14 +189,13 @@ void StoreLe(std::vector<uint8_t>& p, size_t off, uint64_t v, size_t n) {
     for (size_t i = 0; i < n; ++i) p[off+i] = uint8_t(v >> (8*i));
 }
 
-bool RunGenericDma(MiniIcsServer& server, uint64_t desc_base, uint64_t cpl_base,
+bool RunGenericDma(Harness& harness, MiniIcsServer& server, uint64_t desc_base, uint64_t cpl_base,
                    uint32_t count, uint32_t tail, uint32_t* head,
                    uint64_t sim_time) {
     constexpr uint32_t kDescBytes = 32;
     constexpr uint32_t kCplBytes = 16;
     constexpr uint32_t kRamBytes = 64 * 1024;
     constexpr uint32_t kMaxTransfer = 4096;
-    static std::vector<uint8_t> ram(kRamBytes, 0);
     if (!count || count > 1024 || tail < *head || tail - *head > count)
         return false;
 
@@ -107,22 +222,14 @@ bool RunGenericDma(MiniIcsServer& server, uint64_t desc_base, uint64_t cpl_base,
                 uint64_t(ram_addr) + length <= kRamBytes &&
                 (opcode == 0 || opcode == 1)) {
                 if (opcode == 0) {
-                    auto rsp = server.SendRequestToHost(MessageType::kDmaReadReq,
-                                                         host_addr, 0, {}, length,
-                                                         sim_time, true);
-                    if (rsp && rsp->header.Status() == StatusCode::kSuccess &&
-                        rsp->payload.size() == length) {
-                        std::memcpy(ram.data() + ram_addr, rsp->payload.data(), length);
+                    if (harness.DmaRead(server, host_addr, ram_addr, length,
+                                        uint8_t(tag), sim_time)) {
                         status = 0;
                         bytes = length;
                     }
                 } else {
-                    std::vector<uint8_t> payload(length);
-                    std::memcpy(payload.data(), ram.data() + ram_addr, length);
-                    auto rsp = server.SendRequestToHost(MessageType::kDmaWriteReq,
-                                                         host_addr, 0, payload, length,
-                                                         sim_time, true);
-                    if (rsp && rsp->header.Status() == StatusCode::kSuccess) {
+                    if (harness.DmaWrite(server, host_addr, ram_addr, length,
+                                         uint8_t(tag), sim_time)) {
                         status = 0;
                         bytes = length;
                     }
@@ -161,7 +268,7 @@ int main(int argc, char **argv) {
     if (!server.Start()) return 1;
     auto *top=new Valex_qemu_verilator_top;
     top->mmio_req_valid=0; top->rst=1;
-    Harness harness(top); harness.Reset();
+    Harness harness(top); harness.InitDmaPorts(); harness.Reset();
     uint64_t asq=0, acq=0, desc_base=0, cpl_base=0;
     uint32_t desc_count=0, desc_head=0, dma_control=0, dma_status=0;
     bool stop=false;
@@ -205,7 +312,7 @@ int main(int argc, char **argv) {
                 server.SendResponse(rsp,{});
                 if (msg.header.address==0x1054 && (dma_control & 1) && desc_count) {
                     const uint32_t tail = uint32_t(DecodeLe(msg.payload));
-                    if (!RunGenericDma(server, desc_base, cpl_base, desc_count, tail,
+                    if (!RunGenericDma(harness, server, desc_base, cpl_base, desc_count, tail,
                                        &desc_head, harness.sim_time()))
                         dma_status = 1;
                     else

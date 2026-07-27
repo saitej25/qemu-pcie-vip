@@ -15,6 +15,31 @@ module alex_qemu_verilator_top (
     output wire [31:0] dma_desc_count, output wire [31:0] dma_desc_tail,
     output wire [31:0] dma_status, output wire [31:0] dma_control,
     output wire dma_doorbell_pulse,
+    input wire dma_read_desc_valid, output wire dma_read_desc_ready,
+    input wire [63:0] dma_read_desc_pcie_addr,
+    input wire [15:0] dma_read_desc_ram_addr,
+    input wire [15:0] dma_read_desc_len, input wire [7:0] dma_read_desc_tag,
+    output wire dma_read_status_valid, output wire [7:0] dma_read_status_tag,
+    output wire [3:0] dma_read_status_error,
+    input wire dma_write_desc_valid, output wire dma_write_desc_ready,
+    input wire [63:0] dma_write_desc_pcie_addr,
+    input wire [15:0] dma_write_desc_ram_addr,
+    input wire [15:0] dma_write_desc_len, input wire [7:0] dma_write_desc_tag,
+    output wire dma_write_status_valid, output wire [7:0] dma_write_status_tag,
+    output wire [3:0] dma_write_status_error,
+    output wire [63:0] dma_rd_req_addr, output wire [15:0] dma_rd_req_len,
+    output wire dma_rd_req_valid, output wire dma_rd_req_sop, output wire dma_rd_req_eop,
+    input wire dma_rd_req_ready,
+    output wire [63:0] dma_wr_req_addr, output wire [15:0] dma_wr_req_len,
+    output wire dma_wr_req_valid, output wire dma_wr_req_sop, output wire dma_wr_req_eop,
+    output wire [63:0] dma_wr_req_data0, output wire [63:0] dma_wr_req_data1,
+    output wire [63:0] dma_wr_req_data2, output wire [63:0] dma_wr_req_data3,
+    input wire dma_wr_req_ready,
+    input wire dma_rx_cpl_valid, input wire dma_rx_cpl_sop, input wire dma_rx_cpl_eop,
+    input wire [63:0] dma_rx_cpl_hdr_lo, input wire [63:0] dma_rx_cpl_hdr_hi,
+    input wire [63:0] dma_rx_cpl_data0, input wire [63:0] dma_rx_cpl_data1,
+    input wire [63:0] dma_rx_cpl_data2, input wire [63:0] dma_rx_cpl_data3,
+    input wire [3:0] dma_rx_cpl_error, output wire dma_rx_cpl_ready,
     output wire doorbell_pulse, output wire [31:0] doorbell_value
 );
     localparam int DATA_W = 256;
@@ -30,6 +55,11 @@ module alex_qemu_verilator_top (
     logic tx_cpl_tlp_ready = 1'b1;
     wire msix_valid;
     wire [10:0] msix_vector;
+    wire [255:0] dma_tx_wr_data_int;
+    wire [127:0] dma_tx_rd_hdr_int, dma_tx_wr_hdr_int;
+    wire [255:0] dma_rx_cpl_data_int = {dma_rx_cpl_data3, dma_rx_cpl_data2,
+                                         dma_rx_cpl_data1, dma_rx_cpl_data0};
+    wire [127:0] dma_rx_cpl_hdr_int = {dma_rx_cpl_hdr_hi, dma_rx_cpl_hdr_lo};
 
     pcie_vip_alex_endpoint #(
         .TLP_DATA_WIDTH(DATA_W), .TLP_STRB_WIDTH(STRB_W), .TLP_HDR_WIDTH(128)
@@ -48,6 +78,48 @@ module alex_qemu_verilator_top (
         .dma_doorbell_pulse(dma_doorbell_pulse),
         .msix_vector(msix_vector), .axil_doorbell_pulse(doorbell_pulse),
         .axil_doorbell_value(doorbell_value)
+    );
+
+    assign dma_rd_req_addr = {dma_tx_rd_hdr_int[63:34], 2'b00};
+    assign dma_rd_req_len = {6'd0, dma_tx_rd_hdr_int[105:96], 2'b00};
+    assign dma_rd_req_valid = dma_tx_rd_req_valid_int;
+    assign dma_rd_req_sop = dma_tx_rd_req_sop_int;
+    assign dma_rd_req_eop = dma_tx_rd_req_eop_int;
+    assign dma_wr_req_addr = {dma_tx_wr_hdr_int[63:34], 2'b00};
+    assign dma_wr_req_len = {6'd0, dma_tx_wr_hdr_int[105:96], 2'b00};
+    assign dma_wr_req_valid = dma_tx_wr_req_valid_int;
+    assign dma_wr_req_sop = dma_tx_wr_req_sop_int;
+    assign dma_wr_req_eop = dma_tx_wr_req_eop_int;
+    assign dma_wr_req_data0 = dma_tx_wr_data_int[63:0];
+    assign dma_wr_req_data1 = dma_tx_wr_data_int[127:64];
+    assign dma_wr_req_data2 = dma_tx_wr_data_int[191:128];
+    assign dma_wr_req_data3 = dma_tx_wr_data_int[255:192];
+
+    wire [127:0] dma_tx_rd_hdr_int;
+    wire dma_tx_rd_req_valid_int, dma_tx_rd_req_sop_int, dma_tx_rd_req_eop_int;
+    wire [127:0] dma_tx_wr_hdr_int;
+    wire dma_tx_wr_req_valid_int, dma_tx_wr_req_sop_int, dma_tx_wr_req_eop_int;
+
+    pcie_vip_dma_if_pcie dma_engine (
+        .clk(clk), .rst(rst), .rx_cpl_tlp_data(dma_rx_cpl_data_int),
+        .rx_cpl_tlp_hdr(dma_rx_cpl_hdr_int), .rx_cpl_tlp_error(dma_rx_cpl_error),
+        .rx_cpl_tlp_valid(dma_rx_cpl_valid), .rx_cpl_tlp_sop(dma_rx_cpl_sop),
+        .rx_cpl_tlp_eop(dma_rx_cpl_eop), .rx_cpl_tlp_ready(dma_rx_cpl_ready),
+        .tx_rd_req_tlp_hdr(dma_tx_rd_hdr_int), .tx_rd_req_tlp_valid(dma_tx_rd_req_valid_int),
+        .tx_rd_req_tlp_sop(dma_tx_rd_req_sop_int), .tx_rd_req_tlp_eop(dma_tx_rd_req_eop_int),
+        .tx_rd_req_tlp_ready(dma_rd_req_ready), .tx_wr_req_tlp_data(dma_tx_wr_data_int),
+        .tx_wr_req_tlp_strb(), .tx_wr_req_tlp_hdr(dma_tx_wr_hdr_int),
+        .tx_wr_req_tlp_valid(dma_tx_wr_req_valid_int), .tx_wr_req_tlp_sop(dma_tx_wr_req_sop_int),
+        .tx_wr_req_tlp_eop(dma_tx_wr_req_eop_int), .tx_wr_req_tlp_ready(dma_wr_req_ready),
+        .read_desc_valid(dma_read_desc_valid), .read_desc_ready(dma_read_desc_ready),
+        .read_desc_pcie_addr(dma_read_desc_pcie_addr), .read_desc_ram_addr(dma_read_desc_ram_addr),
+        .read_desc_len(dma_read_desc_len), .read_desc_tag(dma_read_desc_tag),
+        .read_status_valid(dma_read_status_valid), .read_status_tag(dma_read_status_tag),
+        .read_status_error(dma_read_status_error), .write_desc_valid(dma_write_desc_valid),
+        .write_desc_ready(dma_write_desc_ready), .write_desc_pcie_addr(dma_write_desc_pcie_addr),
+        .write_desc_ram_addr(dma_write_desc_ram_addr), .write_desc_len(dma_write_desc_len),
+        .write_desc_tag(dma_write_desc_tag), .write_status_valid(dma_write_status_valid),
+        .write_status_tag(dma_write_status_tag), .write_status_error(dma_write_status_error)
     );
 
     localparam [3:0] ST_IDLE=0, ST_SEND=1, ST_HANDSHAKE=2,
