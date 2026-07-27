@@ -76,6 +76,23 @@ hierarchies are `sim:/mini_ics_alex_tb/dut/axil_master_inst/*`,
 `sim:/mini_ics_alex_tb/dut/axil_slave_model/*`, and the TLP signals under
 `sim:/mini_ics_alex_tb/dut/*`.
 
+## Verilator Alex test
+
+The same generic TLP-to-AXI-Lite endpoint has a pure-RTL Verilator runner.
+It drives CAP/CC/CSTS reads, a `0xdeadbeef` CSR write/readback, and the SQ
+doorbell without Mini-ICS DPI or a Questa license:
+
+```sh
+sudo apt-get install verilator       # once, if needed
+make -C rtl/alex verilator_alex
+# or: mini-ics/scripts/run_verilator.sh
+```
+
+The expected result is `VERILATOR ALEX AXI/TLP PASS`. Set
+`VERILATOR_TRACE=1` to emit `rtl/alex/alex_verilator.fst`. This is the
+Verilator RTL milestone; the live QEMU socket remains the Questa flow until
+a compiled-C++ Mini-ICS DPI binding is supplied for Verilator.
+
 ## Deterministic baseline
 
 The software backend is still available for fast tests:

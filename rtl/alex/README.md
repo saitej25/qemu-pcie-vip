@@ -62,3 +62,22 @@ SystemVerilog Mini-ICS-to-TLP BFM, so QEMU BAR accesses can be driven through
 The bring-up top keeps the deterministic DMA sequence enabled while the
 `dma_if_pcie` descriptor/RAM path is being connected; MMIO is now
 QEMU-to-TLP-to-Alex-AXI-Lite.
+
+## Verilator
+
+The pure-RTL Alex path has a simulator-independent Verilator runner.  It
+does not load the Questa DPI library or require cocotb: the testbench drives
+one-segment Memory Read/Write TLPs into `pcie_axil_master_minimal` and checks
+the AXI-Lite register block, including CC/CSTS and the SQ doorbell.
+
+```sh
+git submodule update --init --recursive
+sudo apt-get install verilator       # once, if it is not installed
+make -C rtl/alex verilator_alex
+```
+
+For an FST waveform, set `VERILATOR_TRACE=1`; the runner writes
+`rtl/alex/alex_verilator.fst`.  This is the RTL-level Verilator milestone.
+The live QEMU socket path remains the Questa path until a compiled-C++
+Mini-ICS DPI binding is added; Verilator cannot consume Questa's `-sv_lib`
+shared library directly.
