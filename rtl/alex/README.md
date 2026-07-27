@@ -105,4 +105,19 @@ For an FST waveform, set `VERILATOR_TRACE=1`; the runner writes
 `rtl/alex/alex_verilator.fst`.  This is the RTL-level Verilator milestone.
 The live QEMU socket path remains the Questa path until a compiled-C++
 Mini-ICS DPI binding is added; Verilator cannot consume Questa's `-sv_lib`
-shared library directly.
+shared library directly.  For the host-side Verilator adapter, use the
+`run_qemu_verilator.sh` path above.
+
+For a host-only sandbox check (no Linux guest image required), build the
+adapter and run the orchestrator against a patched QEMU binary:
+
+```sh
+QEMU_VERILATOR_BUILD_ONLY=1 make -C rtl/alex qemu_verilator
+python3 scripts/ci/qemu_verilator_sandbox.py \
+  qemu/build/qemu-system-x86_64 \
+  rtl/alex/build/qemu_verilator/Valex_qemu_verilator_top
+```
+
+The sandbox starts and cleans up the adapter, drives QEMU through QMP, and
+checks that PCI ID `1234:11e9` enumerates. Its adapter log is written to
+`/tmp/pcie-vip-verilator-sandbox.log`.
