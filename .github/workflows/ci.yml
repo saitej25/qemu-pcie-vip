@@ -109,8 +109,8 @@ jobs:
         run: |
           if [ ! -f qemu/build/build.ninja ]; then
             mkdir -p qemu/build
-            cd qemu/build
-            ../configure --target-list=x86_64-softmmu --disable-werror --disable-docs
+            (cd qemu/build && ../configure \
+              --target-list=x86_64-softmmu --disable-werror --disable-docs)
           fi
           ninja -C qemu/build -j"$(nproc)" qemu-system-x86_64
       - name: Build Mini-ICS software backend
