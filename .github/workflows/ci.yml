@@ -19,12 +19,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: false
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake ninja-build python3-pip
           python3 -m pip install --upgrade pytest
+      - name: Fetch required submodule
+        run: scripts/ci/prepare_submodule.sh third_party/pcimem
       - name: Build and test Mini-ICS
         run: |
           cmake -S mini-ics -B build/mini-ics-ci -DMINI_ICS_BUILD_DPI=OFF
@@ -41,11 +43,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: false
       - name: Install Verilator
         run: |
           sudo apt-get update
           sudo apt-get install -y verilator
+      - name: Fetch required submodule
+        run: scripts/ci/prepare_submodule.sh third_party/verilog-pcie
       - name: Run TLP-to-AXI smoke test
         run: make -C rtl/alex verilator_alex
       - name: Upload waveform when generated
@@ -63,7 +67,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: false
       - name: Install QEMU build dependencies
         run: |
           sudo apt-get update
@@ -71,6 +75,8 @@ jobs:
             build-essential ninja-build pkg-config python3 \
             libglib2.0-dev libpixman-1-dev zlib1g-dev libfdt-dev \
             libslirp-dev libcap-ng-dev liburing-dev
+      - name: Fetch QEMU with mirror fallback
+        run: scripts/ci/prepare_submodule.sh qemu
       - name: Apply pinned QEMU integration and build
         run: |
           # The submodule gitlink is already pinned to the reviewed QEMU
