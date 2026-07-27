@@ -258,6 +258,10 @@ static void pcie_vip_remove(struct pci_dev *pdev)
 	struct pcie_vip_dev *vip = pci_get_drvdata(pdev);
 
 	misc_deregister(&vip->misc);
+	/* devm_request_irq() is released after .remove() returns.  Release it
+	 * before tearing down the MSI-X vectors so the PCI core never observes a
+	 * live IRQ using an already-freed vector table. */
+	devm_free_irq(&pdev->dev, pci_irq_vector(pdev, 0), vip);
 	dma_free_coherent(&pdev->dev, 16, vip->completion, vip->completion_dma);
 	dma_free_coherent(&pdev->dev, 64, vip->cmd, vip->cmd_dma);
 	pci_free_irq_vectors(pdev);
