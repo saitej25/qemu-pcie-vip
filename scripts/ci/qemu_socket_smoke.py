@@ -82,8 +82,14 @@ def main() -> int:
         reply = command(qmp_sock, "query-pci")
         if "error" in reply:
             raise RuntimeError(f"query-pci failed: {reply}")
-        encoded = json.dumps(reply)
-        if '"vendor_id": 4660' not in encoded or '"device_id": 4585' not in encoded:
+        devices = [device for bus in reply.get("return", [])
+                   for device in bus.get("devices", [])]
+        found = any(
+            device.get("id", {}).get("vendor") == 0x1234 and
+            device.get("id", {}).get("device") == 0x11e9
+            for device in devices
+        )
+        if not found:
             raise RuntimeError(f"pcie-vip 1234:11e9 not found in query-pci: {reply}")
         print("QEMU PCIe VIP host smoke PASS (1234:11e9)")
         command(qmp_sock, "quit")
