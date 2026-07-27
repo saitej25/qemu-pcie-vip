@@ -63,7 +63,7 @@ jobs:
   qemu-sandbox:
     name: QEMU host-side full flow
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -74,11 +74,14 @@ jobs:
           sudo apt-get install -y \
             build-essential ninja-build pkg-config python3 \
             libglib2.0-dev libpixman-1-dev zlib1g-dev libfdt-dev \
-            libslirp-dev libcap-ng-dev liburing-dev verilator ccache
+            libslirp-dev libcap-ng-dev liburing-dev verilator ccache \
+            bc bison flex rsync cpio unzip file libncurses-dev libssl-dev
       - name: Fetch QEMU with mirror fallback
         run: scripts/ci/prepare_submodule.sh qemu
       - name: Fetch Alex RTL
         run: scripts/ci/prepare_submodule.sh third_party/verilog-pcie
+      - name: Fetch guest dependencies
+        run: scripts/ci/prepare_submodule.sh third_party/buildroot third_party/pcimem
       - name: Apply pinned QEMU integration and build
         run: |
           # The submodule gitlink is already pinned to the reviewed QEMU
@@ -139,3 +142,47 @@ jobs:
             rtl/alex/build/qemu_verilator/Valex_qemu_verilator_top \
             "$socket"
           grep -q 'client handshake complete' /tmp/pcie-vip-verilator-sandbox.log
+      - name: Build Buildroot guest image
+        run: |
+          set -euo pipefail
+          br=third_party/buildroot
+          make -C "$br" BR2_EXTERNAL="$GITHUB_WORKSPACE/guest/pcie-vip/buildroot" \
+            qemu_x86_64_defconfig
+          cat >> "$br/.config" <<EOF
+          BR2_PACKAGE_PCIE_VIP=y
+          BR2_ROOTFS_POST_BUILD_SCRIPT="$GITHUB_WORKSPACE/guest/pcie-vip/buildroot/ci_post_build.sh"
+          EOF
+          make -C "$br" BR2_EXTERNAL="$GITHUB_WORKSPACE/guest/pcie-vip/buildroot" olddefconfig
+          make -C "$br" BR2_EXTERNAL="$GITHUB_WORKSPACE/guest/pcie-vip/buildroot" \
+            -j"$(nproc)"
+      - name: Boot guest and run pcimem against Verilator Alex RTL
+        run: |
+          set -euo pipefail
+          socket=/tmp/pcie-vip-verilator-guest.sock
+          rm -f "$socket"
+          rtl/alex/build/qemu_verilator/Valex_qemu_verilator_top "$socket" \
+            > /tmp/verilator-qemu-guest.log 2>&1 &
+          rtl_pid=$!
+          cleanup() {
+            kill "$rtl_pid" 2>/dev/null || true
+            wait "$rtl_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for _ in $(seq 1 100); do
+            test -S "$socket" && break
+            sleep 0.1
+          done
+          test -S "$socket"
+          set +e
+          timeout 180s qemu/build/qemu-system-x86_64 \
+            -machine q35 -m 512M -nodefaults -display none \
+            -kernel third_party/buildroot/output/images/bzImage \
+            -drive file=third_party/buildroot/output/images/rootfs.ext2,if=virtio,format=raw \
+            -append 'root=/dev/vda rw console=ttyS0' \
+            -serial stdio \
+            -device "pcie-vip,socket=$socket,timeout-ms=5000" \
+            2>&1 | tee /tmp/pcie-vip-guest.log
+          qemu_status=${PIPESTATUS[0]}
+          set -e
+          grep -q 'PCIE-VIP GUEST PCIMEM PASS' /tmp/pcie-vip-guest.log
+          test "$qemu_status" -eq 0

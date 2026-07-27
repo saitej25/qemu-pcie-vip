@@ -3,7 +3,7 @@
 ################################################################################
 
 PCIE_VIP_VERSION = local
-PCIE_VIP_SITE = $(BR2_EXTERNAL_PCIE_VIP_PATH)/../..
+PCIE_VIP_SITE = $(BR2_EXTERNAL_PCIE_VIP_PATH)/../../..
 PCIE_VIP_SITE_METHOD = local
 
 define PCIE_VIP_BUILD_CMDS

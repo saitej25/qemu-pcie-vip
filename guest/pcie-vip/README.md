@@ -65,6 +65,11 @@ Raw BAR access should be performed while `pcie_vip` is not bound.  The DMA
 and MSI-X test must use the driver because it needs a kernel-owned DMA
 address and an interrupt handler.
 
+The GitHub Actions `qemu-sandbox` job builds the pinned Buildroot guest,
+boots it with the Alex Verilator adapter, and runs the raw `pcie-vip-pcimem`
+read/write/read sequence automatically.  The out-of-tree DMA driver remains
+an additional guest test because it requires matching guest kernel headers.
+
 ## Protocol boundary
 
 The guest sees ordinary PCI configuration space and BARs.  QEMU translates
