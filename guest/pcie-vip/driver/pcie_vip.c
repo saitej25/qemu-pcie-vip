@@ -23,6 +23,14 @@
 #define VIP_ASQ 0x0028
 #define VIP_ACQ 0x0030
 #define VIP_SQ0TDBL 0x1000
+#define VIP_DMA_DESC_BASE_LO 0x1040
+#define VIP_DMA_DESC_BASE_HI 0x1044
+#define VIP_DMA_CPL_BASE_LO  0x1048
+#define VIP_DMA_CPL_BASE_HI  0x104c
+#define VIP_DMA_DESC_COUNT   0x1050
+#define VIP_DMA_DESC_TAIL    0x1054
+#define VIP_DMA_STATUS       0x1058
+#define VIP_DMA_CONTROL      0x105c
 
 #define VIP_CC_EN BIT(0)
 #define VIP_CSTS_RDY BIT(0)
@@ -42,6 +50,25 @@ struct pcie_vip_dev {
 	struct miscdevice misc;
 };
 
+struct pcie_vip_dma_desc {
+	__le64 host_addr;
+	__le32 ram_addr;
+	__le16 length;
+	u8 opcode;
+	u8 flags;
+	__le32 tag;
+	__le32 reserved;
+	__le64 reserved2;
+};
+
+struct pcie_vip_dma_cpl {
+	__le32 tag;
+	__le16 status;
+	__le16 reserved;
+	__le32 bytes;
+	__le32 sequence;
+};
+
 static irqreturn_t pcie_vip_irq(int irq, void *opaque)
 {
 	struct pcie_vip_dev *vip = opaque;
@@ -55,23 +82,49 @@ static int pcie_vip_run(struct pcie_vip_dev *vip)
 	unsigned int i;
 	unsigned long timeout;
 	int ret = 0;
+	struct pcie_vip_dma_desc *desc = NULL;
+	struct pcie_vip_dma_cpl *cpl = NULL;
+	void *src = NULL, *dst = NULL;
+	dma_addr_t desc_dma, cpl_dma, src_dma, dst_dma;
+
+	desc = dma_alloc_coherent(&vip->pdev->dev, 2 * sizeof(*desc),
+				  &desc_dma, GFP_KERNEL);
+	cpl = dma_alloc_coherent(&vip->pdev->dev, 2 * sizeof(*cpl),
+				&cpl_dma, GFP_KERNEL);
+	src = dma_alloc_coherent(&vip->pdev->dev, 64, &src_dma, GFP_KERNEL);
+	dst = dma_alloc_coherent(&vip->pdev->dev, 64, &dst_dma, GFP_KERNEL);
+	if (!desc || !cpl || !src || !dst) {
+		ret = -ENOMEM;
+		goto free_dma;
+	}
 
 	mutex_lock(&vip->run_lock);
-	memset(vip->completion, 0, 16);
+	memset(cpl, 0, 2 * sizeof(*cpl));
+	memset(dst, 0, 64);
 	for (i = 0; i < 64; ++i)
-		((u8 *)vip->cmd)[i] = 0xa0 + i;
+		((u8 *)src)[i] = 0xa0 + i;
+	memset(desc, 0, 2 * sizeof(*desc));
+	desc[0].host_addr = cpu_to_le64(src_dma);
+	desc[0].ram_addr = cpu_to_le32(0);
+	desc[0].length = cpu_to_le16(64);
+	desc[0].opcode = 0;
+	desc[0].tag = cpu_to_le32(0x100);
+	desc[1].host_addr = cpu_to_le64(dst_dma);
+	desc[1].ram_addr = cpu_to_le32(0);
+	desc[1].length = cpu_to_le16(64);
+	desc[1].opcode = 1;
+	desc[1].flags = 1;
+	desc[1].tag = cpu_to_le32(0x101);
 
-	/* The reference backend consumes the queue addresses programmed here. */
-	/* writeq is the native x86 PCI MMIO 64-bit access.  The QEMU
-	 * backend preserves it as one Mini ICS transfer (two 32-bit writes
-	 * would be interpreted as two invalid register accesses). */
-	writeq(vip->cmd_dma, vip->bar0 + VIP_ASQ);
-	writeq(vip->completion_dma, vip->bar0 + VIP_ACQ);
-	iowrite32(VIP_AQA_VALUE, vip->bar0 + VIP_AQA);
-	iowrite32(VIP_CC_EN, vip->bar0 + VIP_CC);
+	iowrite32(lower_32_bits(desc_dma), vip->bar0 + VIP_DMA_DESC_BASE_LO);
+	iowrite32(upper_32_bits(desc_dma), vip->bar0 + VIP_DMA_DESC_BASE_HI);
+	iowrite32(lower_32_bits(cpl_dma), vip->bar0 + VIP_DMA_CPL_BASE_LO);
+	iowrite32(upper_32_bits(cpl_dma), vip->bar0 + VIP_DMA_CPL_BASE_HI);
+	iowrite32(2, vip->bar0 + VIP_DMA_DESC_COUNT);
+	iowrite32(1, vip->bar0 + VIP_DMA_CONTROL);
 
 	for (i = 0; i < 50; ++i) {
-		if (ioread32(vip->bar0 + VIP_CSTS) & VIP_CSTS_RDY)
+		if (ioread32(vip->bar0 + VIP_DMA_STATUS) == 0)
 			break;
 		msleep(1);
 	}
@@ -81,20 +134,34 @@ static int pcie_vip_run(struct pcie_vip_dev *vip)
 	}
 
 	reinit_completion(&vip->irq_done);
-	iowrite32(1, vip->bar0 + VIP_SQ0TDBL);
+	iowrite32(2, vip->bar0 + VIP_DMA_DESC_TAIL);
 	timeout = wait_for_completion_timeout(&vip->irq_done, 5 * HZ);
 	if (!timeout) {
 		ret = -ETIMEDOUT;
 		goto out;
 	}
-	for (i = 0; i < 16; ++i) {
-		if (((u8 *)vip->completion)[i] != (u8)(0xc0 + i)) {
+	for (i = 0; i < 64; ++i) {
+		if (((u8 *)dst)[i] != (u8)(0xa0 + i)) {
 			ret = -EIO;
 			break;
 		}
 	}
+	if (le32_to_cpu(cpl[0].tag) != 0x100 || le16_to_cpu(cpl[0].status) != 0 ||
+	    le32_to_cpu(cpl[0].bytes) != 64 || le32_to_cpu(cpl[1].tag) != 0x101 ||
+	    le16_to_cpu(cpl[1].status) != 0 || le32_to_cpu(cpl[1].bytes) != 64)
+		ret = -EIO;
 out:
 	mutex_unlock(&vip->run_lock);
+
+free_dma:
+	if (dst)
+		dma_free_coherent(&vip->pdev->dev, 64, dst, dst_dma);
+	if (src)
+		dma_free_coherent(&vip->pdev->dev, 64, src, src_dma);
+	if (cpl)
+		dma_free_coherent(&vip->pdev->dev, 2 * sizeof(*cpl), cpl, cpl_dma);
+	if (desc)
+		dma_free_coherent(&vip->pdev->dev, 2 * sizeof(*desc), desc, desc_dma);
 	return ret;
 }
 

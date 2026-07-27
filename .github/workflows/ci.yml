@@ -82,6 +82,22 @@ jobs:
         run: scripts/ci/prepare_submodule.sh third_party/verilog-pcie
       - name: Fetch guest dependencies
         run: scripts/ci/prepare_submodule.sh third_party/buildroot third_party/pcimem
+      - name: Compute Buildroot cache key
+        id: buildroot-cache-key
+        run: |
+          buildroot_commit=$(git -C third_party/buildroot rev-parse HEAD)
+          pcimem_commit=$(git -C third_party/pcimem rev-parse HEAD)
+          guest_tree=$(git rev-parse HEAD:guest/pcie-vip)
+          workflow_hash=$(sha256sum .github/workflows/ci.yml | awk '{print $1}')
+          echo "key=${{ runner.os }}-${{ runner.arch }}-buildroot-${buildroot_commit}-${pcimem_commit}-${guest_tree}-${workflow_hash}" >> "$GITHUB_OUTPUT"
+      - name: Restore Buildroot build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/buildroot/dl
+            third_party/buildroot/output
+            .buildroot-ccache
+          key: ${{ steps.buildroot-cache-key.outputs.key }}
       - name: Apply pinned QEMU integration and build
         run: |
           # The submodule gitlink is already pinned to the reviewed QEMU
@@ -143,14 +159,18 @@ jobs:
             "$socket"
           grep -q 'client handshake complete' /tmp/pcie-vip-verilator-sandbox.log
       - name: Build Buildroot guest image
+        env:
+          BR2_CCACHE_DIR: ${{ github.workspace }}/.buildroot-ccache
         run: |
           set -euo pipefail
           br=third_party/buildroot
           make -C "$br" BR2_EXTERNAL="$GITHUB_WORKSPACE/guest/pcie-vip/buildroot" \
             qemu_x86_64_defconfig
           cat >> "$br/.config" <<EOF
+          BR2_CCACHE=y
           BR2_PACKAGE_PCIE_VIP=y
           BR2_ROOTFS_POST_BUILD_SCRIPT="$GITHUB_WORKSPACE/guest/pcie-vip/buildroot/ci_post_build.sh"
+          BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$GITHUB_WORKSPACE/guest/pcie-vip/buildroot/linux.fragment"
           EOF
           make -C "$br" BR2_EXTERNAL="$GITHUB_WORKSPACE/guest/pcie-vip/buildroot" olddefconfig
           make -C "$br" BR2_EXTERNAL="$GITHUB_WORKSPACE/guest/pcie-vip/buildroot" \

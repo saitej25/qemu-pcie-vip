@@ -36,6 +36,13 @@ module axi_lite_slave_model #(
     output reg [31:0]              aqa_reg,
     output reg [63:0]              asq_reg,
     output reg [63:0]              acq_reg,
+    output reg [63:0]              dma_desc_base_reg,
+    output reg [63:0]              dma_cpl_base_reg,
+    output reg [31:0]              dma_desc_count_reg,
+    output reg [31:0]              dma_desc_tail_reg,
+    output reg [31:0]              dma_status_reg,
+    output reg [31:0]              dma_control_reg,
+    output reg                     dma_doorbell_pulse,
     output reg                     doorbell_pulse,
     output reg [31:0]              doorbell_value
 );
@@ -70,7 +77,10 @@ module axi_lite_slave_model #(
         begin
             case (address)
                 13'h0014, 13'h0024, 13'h0028, 13'h002c,
-                13'h0030, 13'h0034, 13'h1000: is_valid_write = 1'b1;
+                13'h0030, 13'h0034, 13'h1000,
+                13'h1040, 13'h1044, 13'h1048, 13'h104c,
+                13'h1050, 13'h1054, 13'h1058, 13'h105c:
+                    is_valid_write = 1'b1;
                 default: is_valid_write = 1'b0;
             endcase
         end
@@ -82,6 +92,8 @@ module axi_lite_slave_model #(
             case (address)
                 13'h0000, 13'h0014, 13'h001c, 13'h0024,
                 13'h0028, 13'h002c, 13'h0030, 13'h0034: is_valid_read = 1'b1;
+                13'h1040, 13'h1044, 13'h1048, 13'h104c,
+                13'h1050, 13'h1054, 13'h1058, 13'h105c: is_valid_read = 1'b1;
                 default: is_valid_read = 1'b0;
             endcase
         end
@@ -99,6 +111,14 @@ module axi_lite_slave_model #(
                 13'h002c: read_value = asq_reg[63:32];
                 13'h0030: read_value = acq_reg[31:0];
                 13'h0034: read_value = acq_reg[63:32];
+                13'h1040: read_value = dma_desc_base_reg[31:0];
+                13'h1044: read_value = dma_desc_base_reg[63:32];
+                13'h1048: read_value = dma_cpl_base_reg[31:0];
+                13'h104c: read_value = dma_cpl_base_reg[63:32];
+                13'h1050: read_value = dma_desc_count_reg;
+                13'h1054: read_value = dma_desc_tail_reg;
+                13'h1058: read_value = dma_status_reg;
+                13'h105c: read_value = dma_control_reg;
                 default: read_value = 32'h00000000;
             endcase
         end
@@ -121,7 +141,15 @@ module axi_lite_slave_model #(
             aqa_reg        <= '0;
             asq_reg        <= '0;
             acq_reg        <= '0;
+            dma_desc_base_reg <= '0;
+            dma_cpl_base_reg <= '0;
+            dma_desc_count_reg <= '0;
+            dma_desc_tail_reg <= '0;
+            dma_status_reg <= '0;
+            dma_control_reg <= '0;
+            dma_doorbell_pulse <= 1'b0;
             doorbell_pulse <= 1'b0;
+            dma_doorbell_pulse <= 1'b0;
             doorbell_value <= '0;
         end else begin
             doorbell_pulse <= 1'b0;
@@ -159,6 +187,17 @@ module axi_lite_slave_model #(
                         13'h002c: asq_reg[63:32] <= apply_wstrb(asq_reg[63:32], wdata_reg, wstrb_reg);
                         13'h0030: acq_reg[31:0]  <= apply_wstrb(acq_reg[31:0],  wdata_reg, wstrb_reg);
                         13'h0034: acq_reg[63:32] <= apply_wstrb(acq_reg[63:32], wdata_reg, wstrb_reg);
+                        13'h1040: dma_desc_base_reg[31:0] <= apply_wstrb(dma_desc_base_reg[31:0], wdata_reg, wstrb_reg);
+                        13'h1044: dma_desc_base_reg[63:32] <= apply_wstrb(dma_desc_base_reg[63:32], wdata_reg, wstrb_reg);
+                        13'h1048: dma_cpl_base_reg[31:0] <= apply_wstrb(dma_cpl_base_reg[31:0], wdata_reg, wstrb_reg);
+                        13'h104c: dma_cpl_base_reg[63:32] <= apply_wstrb(dma_cpl_base_reg[63:32], wdata_reg, wstrb_reg);
+                        13'h1050: dma_desc_count_reg <= apply_wstrb(dma_desc_count_reg, wdata_reg, wstrb_reg);
+                        13'h1054: begin
+                            dma_desc_tail_reg <= apply_wstrb(dma_desc_tail_reg, wdata_reg, wstrb_reg);
+                            dma_doorbell_pulse <= 1'b1;
+                        end
+                        13'h1058: dma_status_reg <= apply_wstrb(dma_status_reg, wdata_reg, wstrb_reg);
+                        13'h105c: dma_control_reg <= apply_wstrb(dma_control_reg, wdata_reg, wstrb_reg);
                         13'h1000: begin
                             doorbell_value <= wdata_reg;
                             doorbell_pulse <= 1'b1;

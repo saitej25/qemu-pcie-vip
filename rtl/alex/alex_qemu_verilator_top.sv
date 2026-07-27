@@ -11,6 +11,10 @@ module alex_qemu_verilator_top (
     input logic [3:0] mmio_req_len, input logic [63:0] mmio_req_data,
     output logic mmio_rsp_valid, output logic [63:0] mmio_rsp_data,
     output logic [1:0] mmio_rsp_status,
+    output wire [63:0] dma_desc_base, output wire [63:0] dma_cpl_base,
+    output wire [31:0] dma_desc_count, output wire [31:0] dma_desc_tail,
+    output wire [31:0] dma_status, output wire [31:0] dma_control,
+    output wire dma_doorbell_pulse,
     output wire doorbell_pulse, output wire [31:0] doorbell_value
 );
     localparam int DATA_W = 256;
@@ -38,6 +42,10 @@ module alex_qemu_verilator_top (
         .tx_cpl_tlp_hdr(tx_cpl_tlp_hdr), .tx_cpl_tlp_valid(tx_cpl_tlp_valid),
         .tx_cpl_tlp_sop(tx_cpl_tlp_sop), .tx_cpl_tlp_eop(tx_cpl_tlp_eop),
         .tx_cpl_tlp_ready(tx_cpl_tlp_ready), .msix_valid(msix_valid),
+        .dma_desc_base(dma_desc_base), .dma_cpl_base(dma_cpl_base),
+        .dma_desc_count(dma_desc_count), .dma_desc_tail(dma_desc_tail),
+        .dma_status(dma_status), .dma_control(dma_control),
+        .dma_doorbell_pulse(dma_doorbell_pulse),
         .msix_vector(msix_vector), .axil_doorbell_pulse(doorbell_pulse),
         .axil_doorbell_value(doorbell_value)
     );

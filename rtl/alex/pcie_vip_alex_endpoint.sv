@@ -32,6 +32,13 @@ module pcie_vip_alex_endpoint #(
     input wire tx_cpl_tlp_ready,
     output reg msix_valid,
     output reg [10:0] msix_vector,
+    output wire [63:0] dma_desc_base,
+    output wire [63:0] dma_cpl_base,
+    output wire [31:0] dma_desc_count,
+    output wire [31:0] dma_desc_tail,
+    output wire [31:0] dma_status,
+    output wire [31:0] dma_control,
+    output wire dma_doorbell_pulse,
     output wire axil_doorbell_pulse,
     output wire [31:0] axil_doorbell_value
 );
@@ -109,6 +116,10 @@ module pcie_vip_alex_endpoint #(
         .s_axil_rvalid(axil_rvalid), .s_axil_rready(axil_rready),
         .cc_reg(cc_reg), .csts_reg(csts_reg), .aqa_reg(aqa_reg),
         .asq_reg(asq_reg), .acq_reg(acq_reg),
+        .dma_desc_base_reg(dma_desc_base), .dma_cpl_base_reg(dma_cpl_base),
+        .dma_desc_count_reg(dma_desc_count), .dma_desc_tail_reg(dma_desc_tail),
+        .dma_status_reg(dma_status), .dma_control_reg(dma_control),
+        .dma_doorbell_pulse(dma_doorbell_pulse),
         .doorbell_pulse(doorbell_pulse), .doorbell_value(doorbell_value)
     );
 

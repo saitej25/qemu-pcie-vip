@@ -85,6 +85,13 @@ BAR reads and writes therefore travel QEMU → Mini-ICS → TLP BFM → Alex
 continues to use the deterministic DMA/MSI-X callback; connecting
 `dma_if_pcie` and its descriptor RAM is the next DMA milestone.
 
+The generic descriptor control plane is also present at BAR0 offsets
+`0x1040`–`0x105c`: descriptor/completion base addresses, ring count and
+tail, status, and control. Descriptors are 32-byte little-endian records;
+completion records are 16 bytes. The Verilator Mini-ICS harness services
+those records with QEMU's DMA requests and raises MSI-X vector 0 for an
+interrupt-flagged descriptor.
+
 ## Verilator
 
 The pure-RTL Alex path has a simulator-independent Verilator runner.  It

@@ -14,6 +14,10 @@ verilator --cc --exe --build -Wall -Wno-fatal -Wno-DECLFILENAME \
   "${VERILOG_PCIE}/pcie_axil_master_minimal.v" \
   "${SCRIPT_DIR}/axi_lite_slave_model.sv" \
   "${SCRIPT_DIR}/pcie_vip_alex_endpoint.sv" \
+  "${SCRIPT_DIR}/pcie_vip_dma_if_pcie.sv" \
+  "${VERILOG_PCIE}/dma_if_pcie.v" \
+  "${VERILOG_PCIE}/dma_if_pcie_rd.v" \
+  "${VERILOG_PCIE}/dma_if_pcie_wr.v" \
   "${SCRIPT_DIR}/alex_qemu_verilator_top.sv" \
   "${SCRIPT_DIR}/verilator_qemu_main.cpp" \
   "${ROOT_DIR}/mini-ics/src/protocol.cpp" "${ROOT_DIR}/mini-ics/src/socket.cpp" \
