@@ -1,9 +1,13 @@
 // Full QEMU -> Mini-ICS -> Verilator -> Alex AXI-Lite harness.
 #include "Valex_qemu_verilator_top.h"
 #include "verilated.h"
+#if VM_TRACE
+#include "verilated_vcd_c.h"
+#endif
 #include "mini_ics/protocol.hpp"
 #include "mini_ics/server.hpp"
 #include <chrono>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <algorithm>
@@ -21,10 +25,22 @@ using mini_ics::StatusCode;
 namespace {
 class Harness {
 public:
-    Harness(Valex_qemu_verilator_top *top) : top_(top) {}
+    Harness(Valex_qemu_verilator_top *top
+#if VM_TRACE
+            , VerilatedVcdC *trace
+#endif
+            ) : top_(top)
+#if VM_TRACE
+            , trace_(trace)
+#endif
+    {}
     void Tick() {
         top_->clk=0; top_->eval(); top_->clk=1; top_->eval(); top_->clk=0;
-        top_->eval(); ++sim_time_;
+        top_->eval();
+#if VM_TRACE
+        if (trace_) trace_->dump(sim_time_);
+#endif
+        ++sim_time_;
         if (top_->doorbell_pulse) doorbell_seen_=true;
     }
     bool Mmio(bool write, uint64_t address, uint32_t length, uint64_t data,
@@ -161,6 +177,9 @@ public:
     void clear_doorbell() { doorbell_seen_=false; }
 private:
     Valex_qemu_verilator_top *top_;
+#if VM_TRACE
+    VerilatedVcdC *trace_;
+#endif
     uint64_t sim_time_=0;
     bool doorbell_seen_=false;
 };
@@ -267,8 +286,22 @@ int main(int argc, char **argv) {
     MiniIcsServer server(socket_path,50,5000);
     if (!server.Start()) return 1;
     auto *top=new Valex_qemu_verilator_top;
+#if VM_TRACE
+    VerilatedVcdC *trace = nullptr;
+    const char *trace_env = std::getenv("PCIE_VIP_VCD");
+    if (!trace_env) trace_env = "/tmp/pcie-vip-verilator.vcd";
+    Verilated::traceEverOn(true);
+    trace = new VerilatedVcdC;
+    top->trace(trace, 99);
+    trace->open(trace_env);
+#endif
     top->mmio_req_valid=0; top->rst=1;
-    Harness harness(top); harness.InitDmaPorts(); harness.Reset();
+    Harness harness(top
+#if VM_TRACE
+                    , trace
+#endif
+                    );
+    harness.InitDmaPorts(); harness.Reset();
     uint64_t asq=0, acq=0, desc_base=0, cpl_base=0;
     uint32_t desc_count=0, desc_head=0, dma_control=0, dma_status=0;
     bool stop=false;
@@ -337,5 +370,13 @@ int main(int argc, char **argv) {
             }
         } else if (type==MessageType::kShutdown) stop=true;
     }
-    server.Stop(); top->final(); delete top; return 0;
+    server.Stop();
+#if VM_TRACE
+    if (trace) {
+        trace->flush();
+        trace->close();
+        delete trace;
+    }
+#endif
+    top->final(); delete top; return 0;
 }

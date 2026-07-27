@@ -80,6 +80,25 @@ In another terminal launch QEMU with:
 -device 'pcie-vip,socket=/tmp/pcie-vip-verilator.sock,timeout-ms=5000'
 ```
 
+To capture the live QEMU/Alex DMA signals, enable Verilator tracing before
+starting the adapter.  This uses the Verilator-4-compatible VCD backend:
+
+```sh
+VERILATOR_TRACE=1 \
+PCIE_VIP_VCD=/tmp/pcie-vip-verilator.vcd \
+make -C rtl/alex qemu_verilator
+```
+
+After the guest test prints `PCIE-VIP DMA/MSI-X PASS`, open the waveform with:
+
+```sh
+gtkwave /tmp/pcie-vip-verilator.vcd
+```
+
+Useful scopes include `alex_qemu_verilator_top.dut`,
+`alex_qemu_verilator_top.dma_engine`, and the AXI-Lite signals under
+`alex_qemu_verilator_top.dut.axil_slave_model`.
+
 BAR reads and writes therefore travel QEMU → Mini-ICS → TLP BFM → Alex
 `pcie_axil_master_minimal` → AXI-Lite register block. The guest regression
 continues to use the deterministic DMA/MSI-X callback; connecting

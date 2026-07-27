@@ -9,7 +9,7 @@ BUILD_DIR="${VERILATOR_QEMU_BUILD_DIR:-${SCRIPT_DIR}/build/qemu_verilator}"
 
 command -v verilator >/dev/null 2>&1 || { echo "verilator is not installed" >&2; exit 2; }
 mkdir -p "${BUILD_DIR}"
-verilator --cc --exe --build -Wall -Wno-fatal -Wno-DECLFILENAME \
+verilator_args=(--cc --exe --build -Wall -Wno-fatal -Wno-DECLFILENAME \
   --top-module alex_qemu_verilator_top --Mdir "${BUILD_DIR}" \
   "${VERILOG_PCIE}/pcie_axil_master_minimal.v" \
   "${SCRIPT_DIR}/axi_lite_slave_model.sv" \
@@ -23,7 +23,14 @@ verilator --cc --exe --build -Wall -Wno-fatal -Wno-DECLFILENAME \
   "${ROOT_DIR}/mini-ics/src/protocol.cpp" "${ROOT_DIR}/mini-ics/src/socket.cpp" \
   "${ROOT_DIR}/mini-ics/src/transaction.cpp" "${ROOT_DIR}/mini-ics/src/logger.cpp" \
   "${ROOT_DIR}/mini-ics/src/server.cpp" \
-  -CFLAGS "-I${ROOT_DIR}/mini-ics/include" -LDFLAGS "-pthread"
+  -CFLAGS "-I${ROOT_DIR}/mini-ics/include" -LDFLAGS "-pthread")
+
+if [[ "${VERILATOR_TRACE:-0}" == 1 ]]; then
+  # --trace is supported by Verilator 4.x and produces a portable VCD.
+  verilator_args+=(--trace)
+fi
+
+verilator "${verilator_args[@]}"
 
 if [[ "${QEMU_VERILATOR_BUILD_ONLY:-0}" == 1 ]]; then
   exit 0
