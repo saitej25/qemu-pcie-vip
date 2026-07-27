@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <algorithm>
 #include <string>
@@ -23,6 +24,11 @@ using mini_ics::MiniIcsServer;
 using mini_ics::StatusCode;
 
 namespace {
+bool TlpLogEnabled() {
+    static const bool enabled = std::getenv("PCIE_VIP_TLP_LOG") != nullptr;
+    return enabled;
+}
+
 class Harness {
 public:
     Harness(Valex_qemu_verilator_top *top
@@ -45,6 +51,15 @@ public:
     }
     bool Mmio(bool write, uint64_t address, uint32_t length, uint64_t data,
               uint64_t *result, uint32_t *status) {
+        if (TlpLogEnabled()) {
+            std::fprintf(stdout,
+                         "[TLP][%llu] %s addr=0x%016llx len=%u data=0x%016llx\n",
+                         static_cast<unsigned long long>(sim_time_),
+                         write ? "MWr" : "MRd",
+                         static_cast<unsigned long long>(address), length,
+                         static_cast<unsigned long long>(data));
+            std::fflush(stdout);
+        }
         top_->mmio_req_write=write; top_->mmio_req_addr=address;
         top_->mmio_req_len=length; top_->mmio_req_data=data;
         top_->mmio_req_valid=0;
@@ -88,6 +103,13 @@ public:
         hdr_lo |= uint64_t(tag) << 40;
         hdr_lo |= uint64_t(lower_addr & 0x7f) << 32;
         if (error) hdr_hi |= uint64_t(1) << 13;
+        if (TlpLogEnabled()) {
+            std::fprintf(stdout,
+                         "[TLP][%llu] CplD tag=0x%02x len=%u byte_count=%u lower_addr=0x%02x%s\n",
+                         static_cast<unsigned long long>(sim_time_), tag, length,
+                         byte_count, lower_addr, error ? " ERROR" : "");
+            std::fflush(stdout);
+        }
         top_->dma_rx_cpl_hdr_hi = hdr_hi;
         top_->dma_rx_cpl_hdr_lo = hdr_lo;
         uint64_t words[4] = {0, 0, 0, 0};
@@ -121,6 +143,13 @@ public:
             Tick();
             if (top_->dma_rd_req_valid) {
                 const uint16_t req_len = top_->dma_rd_req_len;
+                if (TlpLogEnabled()) {
+                    std::fprintf(stdout, "[TLP][%llu] MRd addr=0x%016llx len=%u\n",
+                                 static_cast<unsigned long long>(sim_time_),
+                                 static_cast<unsigned long long>(top_->dma_rd_req_addr),
+                                 req_len);
+                    std::fflush(stdout);
+                }
                 auto rsp = server.SendRequestToHost(MessageType::kDmaReadReq,
                                                      top_->dma_rd_req_addr, 0, {},
                                                      req_len, sim_time, true);
@@ -158,6 +187,15 @@ public:
             Tick();
             if (top_->dma_wr_req_valid) {
                 const uint16_t req_len = top_->dma_wr_req_len;
+                if (TlpLogEnabled()) {
+                    std::fprintf(stdout,
+                                 "[TLP][%llu] MWr addr=0x%016llx len=%u data0=0x%016llx\n",
+                                 static_cast<unsigned long long>(sim_time_),
+                                 static_cast<unsigned long long>(top_->dma_wr_req_addr),
+                                 req_len,
+                                 static_cast<unsigned long long>(top_->dma_wr_req_data0));
+                    std::fflush(stdout);
+                }
                 std::vector<uint8_t> payload(req_len, 0);
                 uint64_t words[4] = {top_->dma_wr_req_data0, top_->dma_wr_req_data1,
                                      top_->dma_wr_req_data2, top_->dma_wr_req_data3};
@@ -237,6 +275,13 @@ bool RunGenericDma(Harness& harness, MiniIcsServer& server, uint64_t desc_base, 
             const uint8_t opcode = desc[14];
             flags = desc[15];
             tag = ReadLe32(desc, 16);
+            if (TlpLogEnabled()) {
+                std::fprintf(stdout,
+                             "[DMA] desc=%u host=0x%016llx ram=0x%08x len=%u opcode=%u tag=0x%08x\n",
+                             index, static_cast<unsigned long long>(host_addr), ram_addr,
+                             length, opcode, tag);
+                std::fflush(stdout);
+            }
             if (length && length <= kMaxTransfer &&
                 uint64_t(ram_addr) + length <= kRamBytes &&
                 (opcode == 0 || opcode == 1)) {
