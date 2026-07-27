@@ -66,8 +66,10 @@ QEMU-to-TLP-to-Alex-AXI-Lite.
 ## Verilator
 
 The pure-RTL Alex path has a simulator-independent Verilator runner.  It
-uses the portable `--cc --exe --build --timing` flow supported by Verilator
-4.x and does not load the Questa DPI library or require cocotb: the testbench drives
+uses the portable `--cc --exe --build` flow supported by Verilator 4.x and
+does not load the Questa DPI library or require cocotb.  The compatibility
+testbench has no simulator timing controls; its C++ harness drives each clock
+edge explicitly:
 one-segment Memory Read/Write TLPs into `pcie_axil_master_minimal` and checks
 the AXI-Lite register block, including CC/CSTS and the SQ doorbell.
 

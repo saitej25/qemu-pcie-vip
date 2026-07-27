@@ -6,7 +6,9 @@ set -euo pipefail
 # DPI: it is a deterministic smoke test for the same TLP boundary used by
 # QEMU, and therefore runs on hosts without cocotb or a simulator license.
 # Use the --cc/--exe flow because Ubuntu 22.04 ships Verilator 4.x, which does
-# not provide the newer --binary convenience option.
+# not provide the newer --binary or --timing convenience options.  The
+# compatibility testbench has no simulator timing controls; the C++ harness
+# drives its clock explicitly.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -28,14 +30,14 @@ fi
 
 mkdir -p "${BUILD_DIR}"
 args=(
-    --cc --exe --build --timing
+    --cc --exe --build
     -Wall -Wno-fatal -Wno-DECLFILENAME
-    --top-module alex_verilator_tb
+    --top-module alex_verilator_compat_tb
     --Mdir "${BUILD_DIR}"
     "${VERILOG_PCIE}/pcie_axil_master_minimal.v"
     "${SCRIPT_DIR}/axi_lite_slave_model.sv"
     "${SCRIPT_DIR}/pcie_vip_alex_endpoint.sv"
-    "${SCRIPT_DIR}/verilator_alex_tb.sv"
+    "${SCRIPT_DIR}/verilator_compat_tb.sv"
     "${SCRIPT_DIR}/verilator_main.cpp"
 )
 
@@ -51,5 +53,5 @@ if [[ "${VERILATOR_TRACE:-0}" == 1 ]]; then
     run_args+=(+TRACE)
 fi
 
-echo "run_verilator_alex.sh: running ${BUILD_DIR}/Valex_verilator_tb"
-"${BUILD_DIR}/Valex_verilator_tb" "${run_args[@]}"
+echo "run_verilator_alex.sh: running ${BUILD_DIR}/Valex_verilator_compat_tb"
+"${BUILD_DIR}/Valex_verilator_compat_tb" "${run_args[@]}"
