@@ -1,0 +1,96 @@
+name: QEMU PCIe VIP CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pcie-vip-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  software:
+    name: Mini-ICS and guest utilities
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build python3-pip
+          python3 -m pip install --upgrade pytest
+      - name: Build and test Mini-ICS
+        run: |
+          cmake -S mini-ics -B build/mini-ics-ci -DMINI_ICS_BUILD_DPI=OFF
+          cmake --build build/mini-ics-ci --parallel 2
+          ctest --test-dir build/mini-ics-ci --output-on-failure
+      - name: Protocol and guest utility tests
+        run: |
+          PYTHONPATH=rtl/alex python3 -m pytest -q rtl/alex/test_bridge.py rtl/alex/test_tlp_bfm.py
+          make -C guest/pcie-vip/user clean all
+
+  verilator:
+    name: Alex RTL with Verilator
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Verilator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y verilator
+      - name: Run TLP-to-AXI smoke test
+        run: make -C rtl/alex verilator_alex
+      - name: Upload waveform when generated
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verilator-waveform
+          path: rtl/alex/alex_verilator.fst
+          if-no-files-found: ignore
+
+  qemu-sandbox:
+    name: QEMU host-side full flow
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install QEMU build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential ninja-build pkg-config python3 \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev libfdt-dev \
+            libslirp-dev libcap-ng-dev liburing-dev
+      - name: Apply pinned QEMU integration and build
+        run: |
+          git -C qemu checkout --detach v11.0.3
+          git -C qemu apply ../patches/qemu-pcie-vip.patch
+          mkdir -p qemu/build
+          cd qemu/build
+          ../configure --target-list=x86_64-softmmu --disable-werror --disable-docs
+          ninja -j2 qemu-system-x86_64
+      - name: Build Mini-ICS software backend
+        run: |
+          cmake -S mini-ics -B build/mini-ics-qemu-ci -DMINI_ICS_BUILD_DPI=OFF
+          cmake --build build/mini-ics-qemu-ci --parallel 2 --target mini_ics_server
+      - name: Start backend and enumerate PCIe VIP in QEMU
+        run: |
+          set -euo pipefail
+          socket=/tmp/pcie-vip-ci.sock
+          rm -f "$socket"
+          build/mini-ics-qemu-ci/mini_ics_server --demo --persistent \
+            --socket "$socket" --log-level info > /tmp/mini-ics-ci.log 2>&1 &
+          backend_pid=$!
+          trap 'kill "$backend_pid" 2>/dev/null || true' EXIT
+          python3 scripts/ci/qemu_socket_smoke.py qemu/build/qemu-system-x86_64 "$socket"
+          grep -q 'client handshake complete' /tmp/mini-ics-ci.log
