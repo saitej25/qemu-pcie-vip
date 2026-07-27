@@ -13,20 +13,16 @@ int main(int argc, char **argv)
     // bring-up test, then release reset before running the self-checking FSM.
     for (int i = 0; i < 4; ++i) {
         top->eval();
-        Verilated::timeInc(1);
         top->clk = 1;
         top->eval();
-        Verilated::timeInc(1);
         top->clk = 0;
     }
     top->rst = 0;
     while (!Verilated::gotFinish()) {
         top->clk = 1;
         top->eval();
-        Verilated::timeInc(1);
         top->clk = 0;
         top->eval();
-        Verilated::timeInc(1);
     }
 
     top->final();
