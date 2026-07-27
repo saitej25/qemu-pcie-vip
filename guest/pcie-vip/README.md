@@ -27,9 +27,10 @@ sudo pcimem /sys/bus/pci/devices/0000:00:03.0/resource0 0x14 w 0xdeadbeef
 ```
 
 The driver targets PCI ID `1234:11e9` and creates `/dev/pcie_vip0`.  Its
-`PCIE_VIP_IOC_RUN` ioctl programs coherent command and completion buffers,
-rings the BAR0 doorbell, waits for MSI-X, and checks the deterministic
-completion pattern.
+`PCIE_VIP_IOC_RUN` ioctl allocates a descriptor ring, completion ring, source
+and destination buffers, submits host-to-device and device-to-host descriptors
+through BAR0, waits for MSI-X, and verifies both completion records and the
+destination data.
 
 ## Guest checks
 
@@ -59,6 +60,12 @@ lspci -xxxx -s 01:00.0
 ./pcie-vip-pcimem 0000:01:00.0 read 0x100 32
 insmod pcie_vip.ko
 ./pcie-vip-run
+```
+
+The expected DMA result is:
+
+```text
+PCIE-VIP DMA/MSI-X PASS
 ```
 
 Raw BAR access should be performed while `pcie_vip` is not bound.  The DMA
