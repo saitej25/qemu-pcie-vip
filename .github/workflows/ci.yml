@@ -113,16 +113,8 @@ jobs:
           socket=/tmp/pcie-vip-verilator-ci.sock
           rm -f "$socket"
           QEMU_VERILATOR_BUILD_ONLY=1 make -C rtl/alex qemu_verilator
-          rtl/alex/build/qemu_verilator/Valex_qemu_verilator_top "$socket" \
-            > /tmp/verilator-qemu-ci.log 2>&1 &
-          rtl_pid=$!
-          trap 'kill "$rtl_pid" 2>/dev/null || true' EXIT
-          for _ in $(seq 1 100); do
-            test -S "$socket" && break
-            sleep 0.1
-          done
-          test -S "$socket"
-          python3 scripts/ci/qemu_socket_smoke.py qemu/build/qemu-system-x86_64 "$socket"
-          kill "$rtl_pid" 2>/dev/null || true
-          wait "$rtl_pid" || true
-          grep -q 'client handshake complete' /tmp/verilator-qemu-ci.log
+          python3 scripts/ci/qemu_verilator_sandbox.py \
+            qemu/build/qemu-system-x86_64 \
+            rtl/alex/build/qemu_verilator/Valex_qemu_verilator_top \
+            "$socket"
+          grep -q 'client handshake complete' /tmp/pcie-vip-verilator-sandbox.log
