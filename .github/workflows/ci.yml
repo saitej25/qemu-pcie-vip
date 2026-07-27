@@ -74,9 +74,11 @@ jobs:
           sudo apt-get install -y \
             build-essential ninja-build pkg-config python3 \
             libglib2.0-dev libpixman-1-dev zlib1g-dev libfdt-dev \
-            libslirp-dev libcap-ng-dev liburing-dev
+            libslirp-dev libcap-ng-dev liburing-dev verilator
       - name: Fetch QEMU with mirror fallback
         run: scripts/ci/prepare_submodule.sh qemu
+      - name: Fetch Alex RTL
+        run: scripts/ci/prepare_submodule.sh third_party/verilog-pcie
       - name: Apply pinned QEMU integration and build
         run: |
           # The submodule gitlink is already pinned to the reviewed QEMU
@@ -105,3 +107,22 @@ jobs:
           trap 'kill "$backend_pid" 2>/dev/null || true' EXIT
           python3 scripts/ci/qemu_socket_smoke.py qemu/build/qemu-system-x86_64 "$socket"
           grep -q 'client handshake complete' /tmp/mini-ics-ci.log
+      - name: Run live QEMU through Alex Verilator AXI-Lite path
+        run: |
+          set -euo pipefail
+          socket=/tmp/pcie-vip-verilator-ci.sock
+          rm -f "$socket"
+          QEMU_VERILATOR_BUILD_ONLY=1 make -C rtl/alex qemu_verilator
+          rtl/alex/build/qemu_verilator/Valex_qemu_verilator_top "$socket" \
+            > /tmp/verilator-qemu-ci.log 2>&1 &
+          rtl_pid=$!
+          trap 'kill "$rtl_pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 100); do
+            test -S "$socket" && break
+            sleep 0.1
+          done
+          test -S "$socket"
+          python3 scripts/ci/qemu_socket_smoke.py qemu/build/qemu-system-x86_64 "$socket"
+          kill "$rtl_pid" 2>/dev/null || true
+          wait "$rtl_pid" || true
+          grep -q 'client handshake complete' /tmp/verilator-qemu-ci.log

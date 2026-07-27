@@ -63,6 +63,28 @@ The bring-up top keeps the deterministic DMA sequence enabled while the
 `dma_if_pcie` descriptor/RAM path is being connected; MMIO is now
 QEMU-to-TLP-to-Alex-AXI-Lite.
 
+## Full QEMU + Verilator host path
+
+`run_qemu_verilator.sh` provides a live host-side path without Questa DPI.
+Its C++ harness owns `MiniIcsServer`, converts Mini-ICS MMIO messages into
+the wrapper's TLP BFM inputs, and runs the Alex AXI-Lite endpoint under
+Verilator 4.x or newer. Start it before QEMU:
+
+```sh
+make -C rtl/alex qemu_verilator
+```
+
+In another terminal launch QEMU with:
+
+```sh
+-device 'pcie-vip,socket=/tmp/pcie-vip-verilator.sock,timeout-ms=5000'
+```
+
+BAR reads and writes therefore travel QEMU → Mini-ICS → TLP BFM → Alex
+`pcie_axil_master_minimal` → AXI-Lite register block. The guest regression
+continues to use the deterministic DMA/MSI-X callback; connecting
+`dma_if_pcie` and its descriptor RAM is the next DMA milestone.
+
 ## Verilator
 
 The pure-RTL Alex path has a simulator-independent Verilator runner.  It

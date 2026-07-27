@@ -1,5 +1,5 @@
 VERILOG_PCIE ?= ../../third_party/verilog-pcie/rtl
-.PHONY: questa_compile questa_qemu_compile verilator_alex
+.PHONY: questa_compile questa_qemu_compile verilator_alex qemu_verilator
 questa_compile:
 	@mkdir -p build/questa
 	vlib build/questa/work
@@ -19,3 +19,6 @@ questa_qemu_compile:
 
 verilator_alex:
 	./run_verilator_alex.sh
+
+qemu_verilator:
+	./run_qemu_verilator.sh
