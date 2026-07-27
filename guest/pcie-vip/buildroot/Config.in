@@ -1,4 +1,4 @@
 menu "PCIe VIP guest support"
-source "$(BR2_EXTERNAL_PCIE_VIP_PATH)/package/pcie-vip/Config.in"
-source "$(BR2_EXTERNAL_PCIE_VIP_PATH)/package/pcimem/Config.in"
+source "$BR2_EXTERNAL_PCIE_VIP_PATH/package/pcie-vip/Config.in"
+source "$BR2_EXTERNAL_PCIE_VIP_PATH/package/pcimem/Config.in"
 endmenu
