@@ -1,0 +1,853 @@
+diff --git a/hw/misc/Kconfig b/hw/misc/Kconfig
+index f4d4924..119f0a5 100644
+--- a/hw/misc/Kconfig
++++ b/hw/misc/Kconfig
+@@ -35,6 +35,11 @@ config EDU
+     default y if TEST_DEVICES
+     depends on PCI && MSI_NONBROKEN
+ 
++config PCIE_VIP
++    bool
++    default y if PCI_DEVICES
++    depends on PCI && PCI_EXPRESS && MSI_NONBROKEN
++
+ config I2C_ECHO
+     bool
+     default y if TEST_DEVICES
+diff --git a/hw/misc/meson.build b/hw/misc/meson.build
+index 092f70b..c748a09 100644
+--- a/hw/misc/meson.build
++++ b/hw/misc/meson.build
+@@ -1,5 +1,6 @@
+ system_ss.add(when: 'CONFIG_APPLESMC', if_true: files('applesmc.c'))
+ system_ss.add(when: 'CONFIG_EDU', if_true: files('edu.c'))
++system_ss.add(when: 'CONFIG_PCIE_VIP', if_true: files('pcie-vip.c'))
+ system_ss.add(when: 'CONFIG_FW_CFG_DMA', if_true: files('vmcoreinfo.c'))
+ system_ss.add(when: 'CONFIG_ISA_DEBUG', if_true: files('debugexit.c'))
+ system_ss.add(when: 'CONFIG_ISA_TESTDEV', if_true: files('pc-testdev.c'))
+diff --git a/qemu/docs/specs/pcie-vip.rst b/qemu/docs/specs/pcie-vip.rst
+new file mode 100644
+index 0000000..c60a827
+--- /dev/null
++++ b/qemu/docs/specs/pcie-vip.rst
+@@ -0,0 +1,22 @@
++QEMU PCIe VIP
++============
++
++``pcie-vip`` is a non-migratable PCIe endpoint for verification.  It has
++vendor/device ID ``1234:11e9``, class ``0xff00``, a 64 KiB BAR0 register
++window, and four MSI-X vectors in BAR2.  The device connects to an external
++Mini-ICS v2 server over a Unix socket; the external process owns the
++deterministic register model or an Alex Forencich RTL endpoint.
++
++Example::
++
++  qemu-system-x86_64 -machine q35 \
++    -device pcie-vip,socket=/tmp/pcie-vip.sock,timeout-ms=5000
++
++The socket must be accepting before QEMU realizes the device.  BAR reads and
++writes are little-endian and preserve byte enables.  Endpoint DMA is executed
++with QEMU's ``pci_dma_read``/``pci_dma_write`` APIs, so guest IOMMU mappings
++and bounds checks are honored.  A runtime disconnect makes reads return all
++ones and rejects writes/DMA; restart QEMU to reconnect.
++
++QEMU validates guest-visible PCI behavior only.  PHY, LTSSM, DLLP, and lane
++training remain out of scope and should be exercised with cocotbext-pcie.
+diff --git a/qemu/hw/misc/pcie-vip.c b/qemu/hw/misc/pcie-vip.c
+new file mode 100644
+index 0000000..5a23d10
+--- /dev/null
++++ b/qemu/hw/misc/pcie-vip.c
+@@ -0,0 +1,792 @@
++/*
++ * Standalone PCIe verification endpoint backed by the Mini ICS protocol.
++ *
++ * Copyright (c) 2026
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/atomic.h"
++#include "qemu/cutils.h"
++#include "qemu/log.h"
++#include "qemu/main-loop.h"
++#include "qemu/module.h"
++#include "qemu/thread.h"
++#include "qemu/timer.h"
++#include "qemu/units.h"
++#include "qapi/error.h"
++#include "hw/pci/pci.h"
++#include "hw/pci/pci_device.h"
++#include "hw/pci/pcie.h"
++#include "hw/pci/msix.h"
++#include "hw/core/qdev-properties.h"
++#include "migration/blocker.h"
++#include "system/dma.h"
++
++#include <poll.h>
++#include <sys/socket.h>
++#include <sys/un.h>
++
++#define TYPE_PCIE_VIP "pcie-vip"
++OBJECT_DECLARE_SIMPLE_TYPE(PcieVipState, PCIE_VIP)
++
++#define PCIE_VIP_VENDOR_ID       0x1234
++#define PCIE_VIP_DEVICE_ID       0x11e9
++#define PCIE_VIP_REVISION        0x01
++#define PCIE_VIP_BAR0_SIZE       (64 * KiB)
++#define PCIE_VIP_MSIX_VECTORS    4
++
++#define MICS_MAGIC               0x5343494dU
++#define MICS_VERSION             2
++#define MICS_HEADER_SIZE         64
++#define MICS_MAX_PAYLOAD         (16 * MiB)
++#define MICS_FLAG_RESPONSE       1
++
++enum {
++    MICS_HELLO = 1,
++    MICS_HELLO_ACK,
++    MICS_MMIO_READ_REQ,
++    MICS_MMIO_READ_RSP,
++    MICS_MMIO_WRITE_REQ,
++    MICS_MMIO_WRITE_RSP,
++    MICS_DMA_READ_REQ,
++    MICS_DMA_READ_RSP,
++    MICS_DMA_WRITE_REQ,
++    MICS_DMA_WRITE_RSP,
++    MICS_MSIX,
++    MICS_RESET_REQ,
++    MICS_RESET_RSP,
++    MICS_ERROR,
++    MICS_SHUTDOWN,
++};
++
++enum {
++    MICS_STATUS_SUCCESS = 0,
++    MICS_STATUS_GENERIC = 1,
++    MICS_STATUS_BAD_MAGIC = 2,
++    MICS_STATUS_BAD_VERSION = 3,
++    MICS_STATUS_BAD_LENGTH = 4,
++    MICS_STATUS_TIMEOUT = 5,
++    MICS_STATUS_OUT_OF_BOUNDS = 6,
++    MICS_STATUS_INVALID_ADDRESS = 7,
++    MICS_STATUS_NOT_CONNECTED = 8,
++    MICS_STATUS_DISCONNECTED = 9,
++    MICS_STATUS_UNKNOWN_TRANSACTION = 10,
++    MICS_STATUS_UNSUPPORTED = 11,
++};
++
++typedef struct MicsHeader {
++    uint16_t type;
++    uint16_t flags;
++    uint32_t payload_len;
++    uint64_t txn_id;
++    uint64_t sim_timestamp;
++    uint64_t address;
++    uint64_t byte_enable;
++    uint32_t status;
++    uint32_t transfer_len;
++} MicsHeader;
++
++typedef struct MicsMessage {
++    MicsHeader h;
++    uint8_t *payload;
++} MicsMessage;
++
++typedef struct PcieVipWork {
++    QTAILQ_ENTRY(PcieVipWork) next;
++    MicsMessage msg;
++} PcieVipWork;
++
++struct PcieVipState {
++    PCIDevice parent_obj;
++    MemoryRegion bar0;
++
++    char *socket_path;
++    uint32_t timeout_ms;
++    uint32_t max_transfer;
++    int fd;
++    bool stopping;
++    bool connected;
++    uint64_t next_txn_id;
++
++    QemuThread reader_thread;
++    QemuMutex send_lock;
++    QemuMutex state_lock;
++    QemuCond response_cond;
++
++    bool pending_active;
++    bool pending_done;
++    uint64_t pending_txn_id;
++    MicsMessage pending_response;
++
++    QemuMutex work_lock;
++    QTAILQ_HEAD(, PcieVipWork) work_queue;
++    QEMUBH *work_bh;
++
++    Error *migration_blocker;
++};
++
++static uint16_t get_le16(const uint8_t *p)
++{
++    return p[0] | ((uint16_t)p[1] << 8);
++}
++
++static uint32_t get_le32(const uint8_t *p)
++{
++    return p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
++           ((uint32_t)p[3] << 24);
++}
++
++static uint64_t get_le64(const uint8_t *p)
++{
++    return get_le32(p) | ((uint64_t)get_le32(p + 4) << 32);
++}
++
++static void put_le16(uint8_t *p, uint16_t value)
++{
++    p[0] = value;
++    p[1] = value >> 8;
++}
++
++static void put_le32(uint8_t *p, uint32_t value)
++{
++    p[0] = value;
++    p[1] = value >> 8;
++    p[2] = value >> 16;
++    p[3] = value >> 24;
++}
++
++static void put_le64(uint8_t *p, uint64_t value)
++{
++    put_le32(p, value);
++    put_le32(p + 4, value >> 32);
++}
++
++static void mics_encode_header(const MicsHeader *h,
++                               uint8_t out[MICS_HEADER_SIZE])
++{
++    memset(out, 0, MICS_HEADER_SIZE);
++    put_le32(out + 0, MICS_MAGIC);
++    put_le16(out + 4, MICS_VERSION);
++    put_le16(out + 6, h->type);
++    put_le16(out + 8, h->flags);
++    put_le16(out + 10, MICS_HEADER_SIZE);
++    put_le32(out + 12, h->payload_len);
++    put_le64(out + 16, h->txn_id);
++    put_le64(out + 24, h->sim_timestamp);
++    put_le64(out + 32, h->address);
++    put_le64(out + 40, h->byte_enable);
++    put_le32(out + 48, h->status);
++    put_le32(out + 56, h->transfer_len);
++}
++
++static bool mics_decode_header(const uint8_t in[MICS_HEADER_SIZE],
++                               MicsHeader *h)
++{
++    if (get_le32(in + 0) != MICS_MAGIC ||
++        get_le16(in + 4) != MICS_VERSION ||
++        get_le16(in + 10) != MICS_HEADER_SIZE) {
++        return false;
++    }
++
++    h->type = get_le16(in + 6);
++    h->flags = get_le16(in + 8);
++    h->payload_len = get_le32(in + 12);
++    h->txn_id = get_le64(in + 16);
++    h->sim_timestamp = get_le64(in + 24);
++    h->address = get_le64(in + 32);
++    h->byte_enable = get_le64(in + 40);
++    h->status = get_le32(in + 48);
++    h->transfer_len = get_le32(in + 56);
++    return h->payload_len <= MICS_MAX_PAYLOAD;
++}
++
++static bool wait_fd(int fd, short events, int timeout_ms)
++{
++    struct pollfd pfd = { .fd = fd, .events = events };
++    int rc;
++
++    do {
++        rc = poll(&pfd, 1, timeout_ms);
++    } while (rc < 0 && errno == EINTR);
++    return rc > 0 && !(pfd.revents & (POLLERR | POLLHUP | POLLNVAL));
++}
++
++static bool recv_all(int fd, void *buf, size_t len, int timeout_ms)
++{
++    uint8_t *p = buf;
++
++    while (len) {
++        ssize_t rc;
++
++        if (!wait_fd(fd, POLLIN, timeout_ms)) {
++            return false;
++        }
++        do {
++            rc = recv(fd, p, len, 0);
++        } while (rc < 0 && errno == EINTR);
++        if (rc <= 0) {
++            return false;
++        }
++        p += rc;
++        len -= rc;
++    }
++    return true;
++}
++
++static bool send_all_locked(PcieVipState *s, const void *buf, size_t len)
++{
++    const uint8_t *p = buf;
++
++    while (len) {
++        ssize_t rc;
++
++        if (!wait_fd(s->fd, POLLOUT, s->timeout_ms)) {
++            return false;
++        }
++        do {
++            rc = send(s->fd, p, len, MSG_NOSIGNAL);
++        } while (rc < 0 && errno == EINTR);
++        if (rc <= 0) {
++            return false;
++        }
++        p += rc;
++        len -= rc;
++    }
++    return true;
++}
++
++static bool mics_send(PcieVipState *s, const MicsHeader *h,
++                      const uint8_t *payload)
++{
++    uint8_t wire[MICS_HEADER_SIZE];
++    bool ok;
++
++    if (!qatomic_read(&s->connected)) {
++        return false;
++    }
++    mics_encode_header(h, wire);
++
++    qemu_mutex_lock(&s->send_lock);
++    ok = send_all_locked(s, wire, sizeof(wire));
++    if (ok && h->payload_len) {
++        ok = send_all_locked(s, payload, h->payload_len);
++    }
++    qemu_mutex_unlock(&s->send_lock);
++    return ok;
++}
++
++static bool mics_recv(PcieVipState *s, MicsMessage *msg, int timeout_ms)
++{
++    uint8_t wire[MICS_HEADER_SIZE];
++
++    memset(msg, 0, sizeof(*msg));
++    if (!recv_all(s->fd, wire, sizeof(wire), timeout_ms) ||
++        !mics_decode_header(wire, &msg->h)) {
++        return false;
++    }
++    if (msg->h.payload_len) {
++        msg->payload = g_malloc(msg->h.payload_len);
++        if (!recv_all(s->fd, msg->payload, msg->h.payload_len,
++                      timeout_ms)) {
++            g_free(msg->payload);
++            msg->payload = NULL;
++            return false;
++        }
++    }
++    return true;
++}
++
++static void mics_message_clear(MicsMessage *msg)
++{
++    g_free(msg->payload);
++    memset(msg, 0, sizeof(*msg));
++}
++
++static uint64_t pcie_vip_next_txn(PcieVipState *s)
++{
++    return qatomic_fetch_inc(&s->next_txn_id);
++}
++
++static MicsHeader pcie_vip_header(PcieVipState *s, uint16_t type,
++                                  uint64_t txn_id, hwaddr address,
++                                  uint64_t byte_enable, uint32_t payload_len,
++                                  uint32_t transfer_len, uint16_t flags,
++                                  uint32_t status)
++{
++    MicsHeader h = {
++        .type = type,
++        .flags = flags,
++        .payload_len = payload_len,
++        .txn_id = txn_id,
++        .sim_timestamp = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
++        .address = address,
++        .byte_enable = byte_enable,
++        .status = status,
++        .transfer_len = transfer_len,
++    };
++    return h;
++}
++
++static bool pcie_vip_rpc(PcieVipState *s, MicsHeader *request,
++                         const uint8_t *payload, uint16_t expected,
++                         MicsMessage *response)
++{
++    bool ok = false;
++
++    qemu_mutex_lock(&s->state_lock);
++    if (!s->connected || s->pending_active) {
++        qemu_log_mask(LOG_GUEST_ERROR,
++                      "pcie-vip: RPC unavailable (connected=%d pending=%d)\n",
++                      s->connected, s->pending_active);
++        qemu_mutex_unlock(&s->state_lock);
++        return false;
++    }
++    s->pending_active = true;
++    s->pending_done = false;
++    s->pending_txn_id = request->txn_id;
++    mics_message_clear(&s->pending_response);
++    qemu_mutex_unlock(&s->state_lock);
++
++    if (!mics_send(s, request, payload)) {
++        qemu_log_mask(LOG_GUEST_ERROR,
++                      "pcie-vip: RPC send failed txn=%" PRIu64 "\n",
++                      request->txn_id);
++        goto out;
++    }
++
++    qemu_mutex_lock(&s->state_lock);
++    while (s->connected && !s->pending_done) {
++        if (!qemu_cond_timedwait(&s->response_cond, &s->state_lock,
++                                 s->timeout_ms)) {
++            break;
++        }
++    }
++    if (s->pending_done && s->pending_response.h.type == expected &&
++        s->pending_response.h.status == MICS_STATUS_SUCCESS) {
++        *response = s->pending_response;
++        memset(&s->pending_response, 0, sizeof(s->pending_response));
++        ok = true;
++    } else {
++        qemu_log_mask(LOG_GUEST_ERROR,
++                      "pcie-vip: RPC timeout/invalid response txn=%" PRIu64
++                      " done=%d type=%u status=%u expected=%u\n",
++                      request->txn_id, s->pending_done,
++                      s->pending_response.h.type, s->pending_response.h.status,
++                      expected);
++    }
++    s->pending_active = false;
++    s->pending_done = false;
++    qemu_mutex_unlock(&s->state_lock);
++    return ok;
++
++out:
++    qemu_mutex_lock(&s->state_lock);
++    s->pending_active = false;
++    s->pending_done = false;
++    qemu_mutex_unlock(&s->state_lock);
++    return false;
++}
++
++static void pcie_vip_send_status(PcieVipState *s, const MicsMessage *request,
++                                 uint16_t response_type, uint32_t status,
++                                 const uint8_t *payload, uint32_t payload_len)
++{
++    MicsHeader h = pcie_vip_header(s, response_type, request->h.txn_id,
++                                   request->h.address, 0, payload_len,
++                                   request->h.transfer_len,
++                                   MICS_FLAG_RESPONSE, status);
++    if (!mics_send(s, &h, payload)) {
++        qemu_log_mask(LOG_GUEST_ERROR,
++                      "pcie-vip: failed to send backend response\n");
++    }
++}
++
++static void pcie_vip_process_work(void *opaque)
++{
++    PcieVipState *s = opaque;
++    PcieVipWork *work;
++
++    for (;;) {
++        qemu_mutex_lock(&s->work_lock);
++        work = QTAILQ_FIRST(&s->work_queue);
++        if (work) {
++            QTAILQ_REMOVE(&s->work_queue, work, next);
++        }
++        qemu_mutex_unlock(&s->work_lock);
++        if (!work) {
++            break;
++        }
++
++        switch (work->msg.h.type) {
++        case MICS_DMA_READ_REQ: {
++            uint32_t len = work->msg.h.transfer_len;
++            uint8_t *data = NULL;
++            MemTxResult result = MEMTX_ERROR;
++
++            if (len && len <= s->max_transfer) {
++                data = g_malloc(len);
++                result = pci_dma_read(&s->parent_obj, work->msg.h.address,
++                                      data, len);
++            }
++            pcie_vip_send_status(s, &work->msg, MICS_DMA_READ_RSP,
++                                 result == MEMTX_OK ? MICS_STATUS_SUCCESS :
++                                 MICS_STATUS_OUT_OF_BOUNDS,
++                                 result == MEMTX_OK ? data : NULL,
++                                 result == MEMTX_OK ? len : 0);
++            g_free(data);
++            break;
++        }
++        case MICS_DMA_WRITE_REQ: {
++            uint32_t len = work->msg.h.transfer_len;
++            MemTxResult result = MEMTX_ERROR;
++
++            if (len && len <= s->max_transfer &&
++                len == work->msg.h.payload_len) {
++                result = pci_dma_write(&s->parent_obj, work->msg.h.address,
++                                       work->msg.payload, len);
++            }
++            pcie_vip_send_status(s, &work->msg, MICS_DMA_WRITE_RSP,
++                                 result == MEMTX_OK ? MICS_STATUS_SUCCESS :
++                                 MICS_STATUS_OUT_OF_BOUNDS, NULL, 0);
++            break;
++        }
++        case MICS_MSIX:
++            if (work->msg.h.address < PCIE_VIP_MSIX_VECTORS) {
++                msix_notify(&s->parent_obj, work->msg.h.address);
++            } else {
++                qemu_log_mask(LOG_GUEST_ERROR,
++                              "pcie-vip: invalid MSI-X vector %" PRIu64 "\n",
++                              work->msg.h.address);
++            }
++            break;
++        default:
++            break;
++        }
++
++        mics_message_clear(&work->msg);
++        g_free(work);
++    }
++}
++
++static void *pcie_vip_reader(void *opaque)
++{
++    PcieVipState *s = opaque;
++
++    while (!qatomic_read(&s->stopping)) {
++        MicsMessage msg;
++
++        /* The reader is an idle connection monitor; do not interpret an
++         * ordinary period with no MMIO/DMA traffic as a disconnect. */
++        if (!mics_recv(s, &msg, -1)) {
++            break;
++        }
++
++        if (msg.h.flags & MICS_FLAG_RESPONSE) {
++            qemu_mutex_lock(&s->state_lock);
++            if (s->pending_active && msg.h.txn_id == s->pending_txn_id) {
++                s->pending_response = msg;
++                s->pending_done = true;
++                qemu_cond_signal(&s->response_cond);
++                memset(&msg, 0, sizeof(msg));
++            }
++            qemu_mutex_unlock(&s->state_lock);
++            mics_message_clear(&msg);
++        } else if (msg.h.type == MICS_DMA_READ_REQ ||
++                   msg.h.type == MICS_DMA_WRITE_REQ ||
++                   msg.h.type == MICS_MSIX) {
++            PcieVipWork *work = g_new0(PcieVipWork, 1);
++            work->msg = msg;
++            qemu_mutex_lock(&s->work_lock);
++            QTAILQ_INSERT_TAIL(&s->work_queue, work, next);
++            qemu_mutex_unlock(&s->work_lock);
++            qemu_bh_schedule(s->work_bh);
++        } else {
++            mics_message_clear(&msg);
++        }
++    }
++
++    qemu_mutex_lock(&s->state_lock);
++    qatomic_set(&s->connected, false);
++    qemu_cond_broadcast(&s->response_cond);
++    qemu_mutex_unlock(&s->state_lock);
++    return NULL;
++}
++
++static uint64_t pcie_vip_mmio_read(void *opaque, hwaddr addr, unsigned size)
++{
++    PcieVipState *s = opaque;
++    MicsMessage response = { 0 };
++    uint64_t value = UINT64_MAX;
++    uint64_t be = ((1ULL << size) - 1) << (addr & 7);
++    MicsHeader h = pcie_vip_header(s, MICS_MMIO_READ_REQ,
++                                   pcie_vip_next_txn(s), addr, be, 0, size,
++                                   0, MICS_STATUS_SUCCESS);
++
++    if (pcie_vip_rpc(s, &h, NULL, MICS_MMIO_READ_RSP, &response) &&
++        response.h.payload_len == size) {
++        value = 0;
++        for (unsigned i = 0; i < size; i++) {
++            value |= (uint64_t)response.payload[i] << (i * 8);
++        }
++    } else {
++        qemu_log_mask(LOG_GUEST_ERROR,
++                      "pcie-vip: BAR read failed at 0x%" HWADDR_PRIx "\n",
++                      addr);
++    }
++    mics_message_clear(&response);
++    return value;
++}
++
++static void pcie_vip_mmio_write(void *opaque, hwaddr addr, uint64_t value,
++                                unsigned size)
++{
++    PcieVipState *s = opaque;
++    MicsMessage response = { 0 };
++    uint8_t payload[8];
++    uint64_t be = ((1ULL << size) - 1) << (addr & 7);
++    MicsHeader h = pcie_vip_header(s, MICS_MMIO_WRITE_REQ,
++                                   pcie_vip_next_txn(s), addr, be, size, size,
++                                   0, MICS_STATUS_SUCCESS);
++
++    for (unsigned i = 0; i < size; i++) {
++        payload[i] = value >> (i * 8);
++    }
++    if (!pcie_vip_rpc(s, &h, payload, MICS_MMIO_WRITE_RSP, &response)) {
++        qemu_log_mask(LOG_GUEST_ERROR,
++                      "pcie-vip: BAR write failed at 0x%" HWADDR_PRIx "\n",
++                      addr);
++    }
++    mics_message_clear(&response);
++}
++
++static const MemoryRegionOps pcie_vip_bar_ops = {
++    .read = pcie_vip_mmio_read,
++    .write = pcie_vip_mmio_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid = {
++        .min_access_size = 1,
++        .max_access_size = 8,
++        .unaligned = false,
++    },
++    .impl = {
++        .min_access_size = 1,
++        .max_access_size = 8,
++        .unaligned = false,
++    },
++};
++
++static int pcie_vip_connect(PcieVipState *s, Error **errp)
++{
++    int64_t deadline = g_get_monotonic_time() +
++                       (int64_t)s->timeout_ms * G_TIME_SPAN_MILLISECOND;
++    struct sockaddr_un addr = { .sun_family = AF_UNIX };
++
++    if (!s->socket_path || strlen(s->socket_path) >= sizeof(addr.sun_path)) {
++        error_setg(errp, "pcie-vip: invalid socket path");
++        return -1;
++    }
++    pstrcpy(addr.sun_path, sizeof(addr.sun_path), s->socket_path);
++
++    do {
++        s->fd = socket(AF_UNIX, SOCK_STREAM, 0);
++        if (s->fd < 0) {
++            break;
++        }
++        if (connect(s->fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
++            qatomic_set(&s->connected, true);
++            return 0;
++        }
++        close(s->fd);
++        s->fd = -1;
++        g_usleep(10 * 1000);
++    } while (g_get_monotonic_time() < deadline);
++
++    error_setg_errno(errp, errno, "pcie-vip: cannot connect to %s",
++                     s->socket_path);
++    return -1;
++}
++
++static bool pcie_vip_handshake(PcieVipState *s, Error **errp)
++{
++    MicsMessage response = { 0 };
++    MicsHeader hello = pcie_vip_header(s, MICS_HELLO,
++                                       pcie_vip_next_txn(s), 0, 0, 0, 0,
++                                       0, MICS_STATUS_SUCCESS);
++
++    if (!mics_send(s, &hello, NULL) || !mics_recv(s, &response, s->timeout_ms) ||
++        response.h.type != MICS_HELLO_ACK ||
++        response.h.txn_id != hello.txn_id ||
++        response.h.status != MICS_STATUS_SUCCESS) {
++        error_setg(errp, "pcie-vip: Mini ICS v2 handshake failed");
++        mics_message_clear(&response);
++        return false;
++    }
++    mics_message_clear(&response);
++    return true;
++}
++
++static void pcie_vip_reset(DeviceState *dev)
++{
++    PcieVipState *s = PCIE_VIP(dev);
++    MicsMessage response = { 0 };
++    MicsHeader h;
++
++    if (!qatomic_read(&s->connected)) {
++        return;
++    }
++    h = pcie_vip_header(s, MICS_RESET_REQ, pcie_vip_next_txn(s),
++                        0, 0, 0, 0, 0, MICS_STATUS_SUCCESS);
++    if (!pcie_vip_rpc(s, &h, NULL, MICS_RESET_RSP, &response)) {
++        qemu_log_mask(LOG_GUEST_ERROR, "pcie-vip: backend reset failed\n");
++    }
++    mics_message_clear(&response);
++}
++
++static void pcie_vip_realize(PCIDevice *pdev, Error **errp)
++{
++    PcieVipState *s = PCIE_VIP(pdev);
++    int rc;
++
++    s->fd = -1;
++    s->next_txn_id = 1;
++    qemu_mutex_init(&s->send_lock);
++    qemu_mutex_init(&s->state_lock);
++    qemu_cond_init(&s->response_cond);
++    qemu_mutex_init(&s->work_lock);
++    QTAILQ_INIT(&s->work_queue);
++    s->work_bh = qemu_bh_new(pcie_vip_process_work, s);
++
++    memory_region_init_io(&s->bar0, OBJECT(s), &pcie_vip_bar_ops, s,
++                          "pcie-vip-bar0", PCIE_VIP_BAR0_SIZE);
++    pci_register_bar(pdev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY |
++                     PCI_BASE_ADDRESS_MEM_TYPE_64, &s->bar0);
++
++    rc = pcie_endpoint_cap_init(pdev, 0x80);
++    if (rc < 0) {
++        error_setg(errp, "pcie-vip: failed to add PCIe capability");
++        goto err_bh;
++    }
++
++    rc = msix_init_exclusive_bar(pdev, PCIE_VIP_MSIX_VECTORS, 2, errp);
++    if (rc) {
++        goto err_bh;
++    }
++    for (unsigned i = 0; i < PCIE_VIP_MSIX_VECTORS; i++) {
++        msix_vector_use(pdev, i);
++    }
++
++    if (pcie_vip_connect(s, errp) < 0 || !pcie_vip_handshake(s, errp)) {
++        goto err_msix;
++    }
++
++    error_setg(&s->migration_blocker,
++               "pcie-vip has external Mini ICS backend state");
++    if (migrate_add_blocker(&s->migration_blocker, errp) < 0) {
++        goto err_socket;
++    }
++
++    qemu_thread_create(&s->reader_thread, "pcie-vip-reader",
++                       pcie_vip_reader, s, QEMU_THREAD_JOINABLE);
++    return;
++
++err_socket:
++    qatomic_set(&s->connected, false);
++    close(s->fd);
++    s->fd = -1;
++err_msix:
++    msix_uninit_exclusive_bar(pdev);
++err_bh:
++    qemu_bh_delete(s->work_bh);
++    s->work_bh = NULL;
++}
++
++static void pcie_vip_exit(PCIDevice *pdev)
++{
++    PcieVipState *s = PCIE_VIP(pdev);
++    PcieVipWork *work;
++
++    qatomic_set(&s->stopping, true);
++    if (s->fd >= 0) {
++        shutdown(s->fd, SHUT_RDWR);
++    }
++    if (s->connected || s->fd >= 0) {
++        qemu_thread_join(&s->reader_thread);
++    }
++    qatomic_set(&s->connected, false);
++    if (s->fd >= 0) {
++        close(s->fd);
++        s->fd = -1;
++    }
++
++    if (s->migration_blocker) {
++        migrate_del_blocker(&s->migration_blocker);
++    }
++    if (s->work_bh) {
++        qemu_bh_cancel(s->work_bh);
++        qemu_bh_delete(s->work_bh);
++        s->work_bh = NULL;
++    }
++    qemu_mutex_lock(&s->work_lock);
++    while ((work = QTAILQ_FIRST(&s->work_queue))) {
++        QTAILQ_REMOVE(&s->work_queue, work, next);
++        mics_message_clear(&work->msg);
++        g_free(work);
++    }
++    qemu_mutex_unlock(&s->work_lock);
++    mics_message_clear(&s->pending_response);
++    msix_uninit_exclusive_bar(pdev);
++}
++
++static const Property pcie_vip_properties[] = {
++    DEFINE_PROP_STRING("socket", PcieVipState, socket_path),
++    DEFINE_PROP_UINT32("timeout-ms", PcieVipState, timeout_ms, 5000),
++    DEFINE_PROP_UINT32("max-transfer", PcieVipState, max_transfer, MiB),
++};
++
++static void pcie_vip_instance_init(Object *obj)
++{
++    PcieVipState *s = PCIE_VIP(obj);
++
++    s->socket_path = g_strdup("/tmp/pcie-vip.sock");
++}
++
++static void pcie_vip_class_init(ObjectClass *klass, const void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    PCIDeviceClass *pc = PCI_DEVICE_CLASS(klass);
++
++    pc->realize = pcie_vip_realize;
++    pc->exit = pcie_vip_exit;
++    pc->vendor_id = PCIE_VIP_VENDOR_ID;
++    pc->device_id = PCIE_VIP_DEVICE_ID;
++    pc->revision = PCIE_VIP_REVISION;
++    /* PCI_CLASS_DEVICE is the 16-bit subclass/prog-if field.  Put the
++     * vendor-specific base class (0xff) in the high byte so lspci reports
++     * class 0xff00 rather than class 0x0000/prog-if 0xff. */
++    pc->class_id = PCI_CLASS_OTHERS << 8;
++
++    device_class_set_props(dc, pcie_vip_properties);
++    device_class_set_legacy_reset(dc, pcie_vip_reset);
++    dc->desc = "Mini ICS backed standalone PCIe verification endpoint";
++    set_bit(DEVICE_CATEGORY_MISC, dc->categories);
++}
++
++static const TypeInfo pcie_vip_info = {
++    .name = TYPE_PCIE_VIP,
++    .parent = TYPE_PCI_DEVICE,
++    .instance_size = sizeof(PcieVipState),
++    .instance_init = pcie_vip_instance_init,
++    .class_init = pcie_vip_class_init,
++    .interfaces = (const InterfaceInfo[]) {
++        { INTERFACE_PCIE_DEVICE },
++        { },
++    },
++};
++
++static void pcie_vip_register_types(void)
++{
++    type_register_static(&pcie_vip_info);
++}
++
++type_init(pcie_vip_register_types)

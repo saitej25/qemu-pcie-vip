@@ -1,0 +1,64 @@
+# Alex `verilog-pcie` integration
+
+This directory contains the transaction-level cocotb adapter used to connect
+the QEMU `pcie-vip` BAR endpoint to Alex Forencich's pinned `verilog-pcie`
+components. QEMU remains the PCI configuration/MSI-X owner. The adapter maps
+Mini-ICS v2 MMIO messages to `pcie_axil_master` traffic and maps endpoint DMA
+TLPs back to Mini-ICS DMA requests.
+
+Dependencies are kept outside this repository in `third_party/verilog-pcie`
+and `third_party/cocotbext-pcie`. The bridge is simulator-neutral Python and
+can be imported by both Verilator and Questa cocotb runners.
+
+Example runner setup:
+
+```sh
+PYTHONPATH=rtl/alex:third_party/cocotbext-pcie \
+  python3 -m pytest rtl/alex/test_bridge.py
+```
+
+For a QEMU connection, the adapter must be the Unix-socket listener (QEMU
+connects to it):
+
+```sh
+PYTHONPATH=rtl/alex python3 rtl/alex/run_bridge.py /tmp/pcie-vip.sock
+```
+
+The reference callbacks in `run_bridge.py` are deliberately inert; the Alex
+cocotb wrapper replaces them with AXI-Lite/TLP callbacks. This keeps socket
+framing testable independently from simulator scheduling.
+
+`cocotb_tlp_adapter.py` defines the callback contract used by the real DUT
+driver: AXI-Lite BAR reads/writes, endpoint DMA reads/writes, and MSI-X
+delivery. The simulator-specific coroutine implementation belongs in the
+Questa/Verilator test harness, not in the Mini-ICS codec.
+
+The electrical PHY, LTSSM, DLLP, and lane-training layers are intentionally
+not represented here; use `cocotbext-pcie` standalone tests for those layers.
+
+The dedicated signal-level top is `alex_endpoint_tb.sv`. Compile the Alex
+wrapper independently of the legacy Mini-ICS model with:
+
+```sh
+cd rtl/alex
+make questa_compile
+```
+
+The endpoint now terminates its AXI-Lite master in
+`axi_lite_slave_model.sv`.  The intended direction is QEMU guest MMIO as the
+transaction-level master, followed by the Mini-ICS/TLP adapter, Alex's
+`pcie_axil_master_minimal`, and finally this AXI-Lite slave.  The AXI signals
+(`axil_aw*`, `axil_w*`, `axil_b*`, `axil_ar*`, and `axil_r*`) are kept as named
+hierarchical nets for waveform inspection.  The QEMU live socket still uses
+the transaction-level endpoint until the cocotb socket-to-TLP driver is
+enabled.  For Questa bring-up, `mini_ics_alex_tb.sv` provides a pure
+SystemVerilog Mini-ICS-to-TLP BFM, so QEMU BAR accesses can be driven through
+`pcie_axil_master_minimal` and observed at the AXI-Lite slave:
+
+```sh
+./rtl/alex/run_qemu_questa.sh
+```
+
+The bring-up top keeps the deterministic DMA sequence enabled while the
+`dma_if_pcie` descriptor/RAM path is being connected; MMIO is now
+QEMU-to-TLP-to-Alex-AXI-Lite.

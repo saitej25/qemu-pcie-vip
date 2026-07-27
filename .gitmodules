@@ -1,0 +1,15 @@
+[submodule "qemu"]
+	path = qemu
+	url = https://gitlab.com/qemu-project/qemu.git
+
+[submodule "third_party/verilog-pcie"]
+	path = third_party/verilog-pcie
+	url = https://github.com/alexforencich/verilog-pcie.git
+
+[submodule "third_party/cocotbext-pcie"]
+	path = third_party/cocotbext-pcie
+	url = https://github.com/alexforencich/cocotbext-pcie.git
+
+[submodule "third_party/buildroot"]
+	path = third_party/buildroot
+	url = https://gitlab.com/buildroot.org/buildroot.git

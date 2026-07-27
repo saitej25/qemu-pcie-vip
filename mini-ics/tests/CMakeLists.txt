@@ -1,0 +1,15 @@
+add_executable(protocol_test protocol_test.cpp)
+target_link_libraries(protocol_test PRIVATE mini_ics_core)
+add_test(NAME protocol_test COMMAND protocol_test)
+
+add_executable(socket_test socket_test.cpp)
+target_link_libraries(socket_test PRIVATE mini_ics_core)
+add_test(NAME socket_test COMMAND socket_test)
+
+add_executable(transaction_test transaction_test.cpp)
+target_link_libraries(transaction_test PRIVATE mini_ics_core)
+add_test(NAME transaction_test COMMAND transaction_test)
+
+add_executable(integration_cpp_test integration_cpp_test.cpp)
+target_link_libraries(integration_cpp_test PRIVATE mini_ics_server_lib)
+add_test(NAME integration_cpp_test COMMAND integration_cpp_test)

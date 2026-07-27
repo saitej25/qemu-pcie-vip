@@ -1,0 +1,32 @@
+# Build products
+qemu/build/
+mini-ics/build/
+rtl/alex/build/
+guest/**/build/
+**/questa_work/
+**/verilator_work/
+
+# VM images and generated guest media
+*.qcow2
+*.img
+*.raw
+*.iso
+
+# Simulation output
+*.wlf
+*.vcd
+*.fst
+*.vpd
+*.log
+transcript
+
+# Generated archives and pipeline artifacts
+artifact_*.tar.gz
+pipelineLog-*.txt
+
+# Local/editor files
+.cache/
+__pycache__/
+*.pyc
+.pytest_cache/
+

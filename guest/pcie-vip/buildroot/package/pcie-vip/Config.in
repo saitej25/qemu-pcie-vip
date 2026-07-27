@@ -1,0 +1,6 @@
+config BR2_PACKAGE_PCIE_VIP
+	bool "pcie-vip guest tools"
+	select BR2_PACKAGE_PCIUTILS
+	help
+	  Guest-side BAR utility and deterministic DMA/MSI-X test helper
+	  for the standalone QEMU pcie-vip endpoint.
