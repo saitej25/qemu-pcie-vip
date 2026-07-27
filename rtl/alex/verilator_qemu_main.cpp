@@ -68,7 +68,7 @@ public:
         uint64_t hdr_lo = 0, hdr_hi = 0;
         hdr_hi |= uint64_t(0x4a) << 56; // fmt=3DW+data, type=Completion
         hdr_hi |= uint64_t(length / 4) << 32;
-        hdr_lo |= uint64_t(byte_count) & 0xfff;
+        hdr_hi |= uint64_t(byte_count) & 0xfff;
         hdr_lo |= uint64_t(tag) << 40;
         hdr_lo |= uint64_t(lower_addr & 0x7f) << 32;
         if (error) hdr_hi |= uint64_t(1) << 13;
@@ -118,7 +118,7 @@ public:
                                    payload, sent, chunk, false);
                     sent += chunk;
                 }
-                if (error) SendCompletion(tag, 0, 0, {}, 0, 0, true);
+                if (error) SendCompletion(tag, 0, 0, {}, 0, 4, true);
             }
             if (top_->dma_read_status_valid) return top_->dma_read_status_error == 0;
         }
