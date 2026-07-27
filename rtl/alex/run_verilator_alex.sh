@@ -5,6 +5,8 @@ set -euo pipefail
 # This is intentionally independent of Questa's -sv_lib flow and Mini-ICS
 # DPI: it is a deterministic smoke test for the same TLP boundary used by
 # QEMU, and therefore runs on hosts without cocotb or a simulator license.
+# Use the --cc/--exe flow because Ubuntu 22.04 ships Verilator 4.x, which does
+# not provide the newer --binary convenience option.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -26,7 +28,7 @@ fi
 
 mkdir -p "${BUILD_DIR}"
 args=(
-    --binary --timing
+    --cc --exe --build --timing
     -Wall -Wno-fatal -Wno-DECLFILENAME
     --top-module alex_verilator_tb
     --Mdir "${BUILD_DIR}"
@@ -34,6 +36,7 @@ args=(
     "${SCRIPT_DIR}/axi_lite_slave_model.sv"
     "${SCRIPT_DIR}/pcie_vip_alex_endpoint.sv"
     "${SCRIPT_DIR}/verilator_alex_tb.sv"
+    "${SCRIPT_DIR}/verilator_main.cpp"
 )
 
 if [[ "${VERILATOR_TRACE:-0}" == 1 ]]; then
