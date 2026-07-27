@@ -13,3 +13,7 @@
 [submodule "third_party/buildroot"]
 	path = third_party/buildroot
 	url = https://gitlab.com/buildroot.org/buildroot.git
+
+[submodule "third_party/pcimem"]
+	path = third_party/pcimem
+	url = https://github.com/billfarrow/pcimem.git

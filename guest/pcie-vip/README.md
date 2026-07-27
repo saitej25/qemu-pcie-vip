@@ -10,6 +10,22 @@ make -C user
 make -C driver KDIR=/lib/modules/$(uname -r)/build
 ```
 
+The upstream `billfarrow/pcimem` utility is pinned as the
+`third_party/pcimem` submodule. Build and install it with:
+
+```sh
+make -C user pcimem
+sudo install -m 0755 user/pcimem /usr/local/bin/pcimem
+```
+
+It uses the upstream sysfs-resource interface rather than the custom
+BDF-based wrapper:
+
+```sh
+sudo pcimem /sys/bus/pci/devices/0000:00:03.0/resource0 0x14 w
+sudo pcimem /sys/bus/pci/devices/0000:00:03.0/resource0 0x14 w 0xdeadbeef
+```
+
 The driver targets PCI ID `1234:11e9` and creates `/dev/pcie_vip0`.  Its
 `PCIE_VIP_IOC_RUN` ioctl programs coherent command and completion buffers,
 rings the BAR0 doorbell, waits for MSI-X, and checks the deterministic

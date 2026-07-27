@@ -3,6 +3,9 @@ qemu/build/
 mini-ics/build/
 rtl/alex/build/
 guest/**/build/
+guest/pcie-vip/user/pcimem
+guest/pcie-vip/user/pcie-vip-pcimem
+guest/pcie-vip/user/pcie-vip-run
 **/questa_work/
 **/verilator_work/
 
@@ -29,4 +32,3 @@ pipelineLog-*.txt
 __pycache__/
 *.pyc
 .pytest_cache/
-

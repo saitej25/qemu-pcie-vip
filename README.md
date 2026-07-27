@@ -30,7 +30,7 @@ git submodule update --init --recursive
 ```
 
 The pinned submodules are QEMU, Alex `verilog-pcie`, Alex `cocotbext-pcie`,
-and Buildroot.
+Buildroot, and the upstream `billfarrow/pcimem` BAR utility.
 
 The QEMU integration is maintained as a small patch against the pinned QEMU
 submodule:

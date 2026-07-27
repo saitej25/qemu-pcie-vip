@@ -1,0 +1,4 @@
+config BR2_PACKAGE_PCIMEM
+	bool "pcimem userspace PCI BAR utility"
+	help
+	  Build billfarrow/pcimem for direct sysfs resource BAR access.
