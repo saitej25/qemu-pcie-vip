@@ -74,7 +74,7 @@ jobs:
           sudo apt-get install -y \
             build-essential ninja-build pkg-config python3 \
             libglib2.0-dev libpixman-1-dev zlib1g-dev libfdt-dev \
-            libslirp-dev libcap-ng-dev liburing-dev verilator
+            libslirp-dev libcap-ng-dev liburing-dev verilator ccache
       - name: Fetch QEMU with mirror fallback
         run: scripts/ci/prepare_submodule.sh qemu
       - name: Fetch Alex RTL
@@ -88,10 +88,31 @@ jobs:
           git -C qemu apply ../patches/qemu-pcie-vip.patch
           test -f qemu/hw/misc/pcie-vip.c
           test -f qemu/docs/specs/pcie-vip.rst
-          mkdir -p qemu/build
-          cd qemu/build
-          ../configure --target-list=x86_64-softmmu --disable-werror --disable-docs
-          ninja -j2 qemu-system-x86_64
+      - name: Compute QEMU build cache key
+        id: qemu-cache-key
+        run: |
+          patch_hash=$(sha256sum patches/qemu-pcie-vip.patch | awk '{print $1}')
+          qemu_commit=$(git -C qemu rev-parse HEAD)
+          echo "key=${{ runner.os }}-qemu-${qemu_commit}-${patch_hash}" >> "$GITHUB_OUTPUT"
+      - name: Restore QEMU build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            qemu/build
+            .ccache
+          key: ${{ steps.qemu-cache-key.outputs.key }}
+      - name: Configure and incrementally build QEMU
+        env:
+          CC: ccache gcc
+          CXX: ccache g++
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: |
+          if [ ! -f qemu/build/build.ninja ]; then
+            mkdir -p qemu/build
+            cd qemu/build
+            ../configure --target-list=x86_64-softmmu --disable-werror --disable-docs
+          fi
+          ninja -C qemu/build -j"$(nproc)" qemu-system-x86_64
       - name: Build Mini-ICS software backend
         run: |
           cmake -S mini-ics -B build/mini-ics-qemu-ci -DMINI_ICS_BUILD_DPI=OFF
