@@ -73,7 +73,9 @@ jobs:
             libslirp-dev libcap-ng-dev liburing-dev
       - name: Apply pinned QEMU integration and build
         run: |
-          git -C qemu checkout --detach v11.0.3
+          # The submodule gitlink is already pinned to the reviewed QEMU
+          # v11.0.3 baseline; applying the patch directly also works with
+          # Actions' shallow submodule checkout (where the tag may be absent).
           git -C qemu apply ../patches/qemu-pcie-vip.patch
           mkdir -p qemu/build
           cd qemu/build
