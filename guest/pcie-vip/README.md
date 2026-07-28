@@ -27,9 +27,10 @@ sudo pcimem /sys/bus/pci/devices/0000:00:03.0/resource0 0x14 w 0xdeadbeef
 ```
 
 The driver targets PCI ID `1234:11e9` and creates `/dev/pcie_vip0`.  Its
-`PCIE_VIP_IOC_RUN` ioctl programs coherent command and completion buffers,
-rings the BAR0 doorbell, waits for MSI-X, and checks the deterministic
-completion pattern.
+`PCIE_VIP_IOC_RUN` ioctl allocates a descriptor ring, completion ring, source
+and destination buffers, submits host-to-device and device-to-host descriptors
+through BAR0, waits for MSI-X, and verifies both completion records and the
+destination data.
 
 ## Guest checks
 
@@ -61,9 +62,32 @@ insmod pcie_vip.ko
 ./pcie-vip-run
 ```
 
+The expected DMA result is:
+
+```text
+PCIE-VIP DMA/MSI-X PASS
+```
+
+The test app also supports an interactive/configurable mode:
+
+```sh
+pcie-vip-run --help
+pcie-vip-run --length 4096 --iterations 10 --verbose
+pcie-vip-run --interactive
+```
+
+Verbose mode reports payload size, completed iterations, elapsed time,
+round-trip bytes, and throughput. The default no-argument invocation remains
+compatible with the CI check.
+
 Raw BAR access should be performed while `pcie_vip` is not bound.  The DMA
 and MSI-X test must use the driver because it needs a kernel-owned DMA
 address and an interrupt handler.
+
+The GitHub Actions `qemu-sandbox` job builds the pinned Buildroot guest,
+boots it with the Alex Verilator adapter, and runs the raw `pcie-vip-pcimem`
+read/write/read sequence automatically.  The out-of-tree DMA driver remains
+an additional guest test because it requires matching guest kernel headers.
 
 ## Protocol boundary
 

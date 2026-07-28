@@ -63,7 +63,7 @@ jobs:
   qemu-sandbox:
     name: QEMU host-side full flow
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -74,9 +74,30 @@ jobs:
           sudo apt-get install -y \
             build-essential ninja-build pkg-config python3 \
             libglib2.0-dev libpixman-1-dev zlib1g-dev libfdt-dev \
-            libslirp-dev libcap-ng-dev liburing-dev
+            libslirp-dev libcap-ng-dev liburing-dev verilator ccache \
+            bc bison flex rsync cpio unzip file libncurses-dev libssl-dev
       - name: Fetch QEMU with mirror fallback
         run: scripts/ci/prepare_submodule.sh qemu
+      - name: Fetch Alex RTL
+        run: scripts/ci/prepare_submodule.sh third_party/verilog-pcie
+      - name: Fetch guest dependencies
+        run: scripts/ci/prepare_submodule.sh third_party/buildroot third_party/pcimem
+      - name: Compute Buildroot cache key
+        id: buildroot-cache-key
+        run: |
+          buildroot_commit=$(git -C third_party/buildroot rev-parse HEAD)
+          pcimem_commit=$(git -C third_party/pcimem rev-parse HEAD)
+          guest_tree=$(git rev-parse HEAD:guest/pcie-vip)
+          workflow_hash=$(sha256sum .github/workflows/ci.yml | awk '{print $1}')
+          echo "key=${{ runner.os }}-${{ runner.arch }}-buildroot-${buildroot_commit}-${pcimem_commit}-${guest_tree}-${workflow_hash}" >> "$GITHUB_OUTPUT"
+      - name: Restore Buildroot build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/buildroot/dl
+            third_party/buildroot/output
+            .buildroot-ccache
+          key: ${{ steps.buildroot-cache-key.outputs.key }}
       - name: Apply pinned QEMU integration and build
         run: |
           # The submodule gitlink is already pinned to the reviewed QEMU
@@ -86,10 +107,31 @@ jobs:
           git -C qemu apply ../patches/qemu-pcie-vip.patch
           test -f qemu/hw/misc/pcie-vip.c
           test -f qemu/docs/specs/pcie-vip.rst
-          mkdir -p qemu/build
-          cd qemu/build
-          ../configure --target-list=x86_64-softmmu --disable-werror --disable-docs
-          ninja -j2 qemu-system-x86_64
+      - name: Compute QEMU build cache key
+        id: qemu-cache-key
+        run: |
+          patch_hash=$(sha256sum patches/qemu-pcie-vip.patch | awk '{print $1}')
+          qemu_commit=$(git -C qemu rev-parse HEAD)
+          echo "key=${{ runner.os }}-qemu-${qemu_commit}-${patch_hash}" >> "$GITHUB_OUTPUT"
+      - name: Restore QEMU build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            qemu/build
+            .ccache
+          key: ${{ steps.qemu-cache-key.outputs.key }}
+      - name: Configure and incrementally build QEMU
+        env:
+          CC: ccache gcc
+          CXX: ccache g++
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: |
+          if [ ! -f qemu/build/build.ninja ]; then
+            mkdir -p qemu/build
+            (cd qemu/build && ../configure \
+              --target-list=x86_64-softmmu --disable-werror --disable-docs)
+          fi
+          ninja -C qemu/build -j"$(nproc)" qemu-system-x86_64
       - name: Build Mini-ICS software backend
         run: |
           cmake -S mini-ics -B build/mini-ics-qemu-ci -DMINI_ICS_BUILD_DPI=OFF
@@ -105,3 +147,62 @@ jobs:
           trap 'kill "$backend_pid" 2>/dev/null || true' EXIT
           python3 scripts/ci/qemu_socket_smoke.py qemu/build/qemu-system-x86_64 "$socket"
           grep -q 'client handshake complete' /tmp/mini-ics-ci.log
+      - name: Run live QEMU through Alex Verilator AXI-Lite path
+        run: |
+          set -euo pipefail
+          socket=/tmp/pcie-vip-verilator-ci.sock
+          rm -f "$socket"
+          QEMU_VERILATOR_BUILD_ONLY=1 make -C rtl/alex qemu_verilator
+          python3 scripts/ci/qemu_verilator_sandbox.py \
+            qemu/build/qemu-system-x86_64 \
+            rtl/alex/build/qemu_verilator/Valex_qemu_verilator_top \
+            "$socket"
+          grep -q 'client handshake complete' /tmp/pcie-vip-verilator-sandbox.log
+      - name: Build Buildroot guest image
+        env:
+          BR2_CCACHE_DIR: ${{ github.workspace }}/.buildroot-ccache
+        run: |
+          set -euo pipefail
+          br=third_party/buildroot
+          make -C "$br" BR2_EXTERNAL="$GITHUB_WORKSPACE/guest/pcie-vip/buildroot" \
+            qemu_x86_64_defconfig
+          cat >> "$br/.config" <<EOF
+          BR2_CCACHE=y
+          BR2_PACKAGE_PCIE_VIP=y
+          BR2_ROOTFS_POST_BUILD_SCRIPT="$GITHUB_WORKSPACE/guest/pcie-vip/buildroot/ci_post_build.sh"
+          BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$GITHUB_WORKSPACE/guest/pcie-vip/buildroot/linux.fragment"
+          EOF
+          make -C "$br" BR2_EXTERNAL="$GITHUB_WORKSPACE/guest/pcie-vip/buildroot" olddefconfig
+          make -C "$br" BR2_EXTERNAL="$GITHUB_WORKSPACE/guest/pcie-vip/buildroot" \
+            -j"$(nproc)"
+      - name: Boot guest and run pcimem against Verilator Alex RTL
+        run: |
+          set -euo pipefail
+          socket=/tmp/pcie-vip-verilator-guest.sock
+          rm -f "$socket"
+          rtl/alex/build/qemu_verilator/Valex_qemu_verilator_top "$socket" \
+            > /tmp/verilator-qemu-guest.log 2>&1 &
+          rtl_pid=$!
+          cleanup() {
+            kill "$rtl_pid" 2>/dev/null || true
+            wait "$rtl_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for _ in $(seq 1 100); do
+            test -S "$socket" && break
+            sleep 0.1
+          done
+          test -S "$socket"
+          set +e
+          timeout 180s qemu/build/qemu-system-x86_64 \
+            -machine q35 -m 512M -nodefaults -display none \
+            -kernel third_party/buildroot/output/images/bzImage \
+            -drive file=third_party/buildroot/output/images/rootfs.ext2,if=virtio,format=raw \
+            -append 'root=/dev/vda rw console=ttyS0' \
+            -serial stdio \
+            -device "pcie-vip,socket=$socket,timeout-ms=5000" \
+            2>&1 | tee /tmp/pcie-vip-guest.log
+          qemu_status=${PIPESTATUS[0]}
+          set -e
+          grep -q 'PCIE-VIP GUEST PCIMEM PASS' /tmp/pcie-vip-guest.log
+          test "$qemu_status" -eq 0

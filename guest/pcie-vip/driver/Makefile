@@ -1,4 +1,5 @@
 obj-m += pcie_vip.o
+ccflags-y += -I$(src)/../include
 
 KDIR ?= /lib/modules/$(shell uname -r)/build
 PWD := $(shell pwd)

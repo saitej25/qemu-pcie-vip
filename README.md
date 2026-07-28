@@ -17,9 +17,8 @@ Linux pcimem / driver
 
 The QEMU guest sees PCI ID `1234:11e9`, a 64-KiB BAR0, and four MSI-X vectors.
 The deterministic software DMA backend remains available as a regression
-baseline. The Alex `dma_if_pcie` descriptor/RAM path is the next integration
-stage; the current bring-up path already drives QEMU MMIO through Alex
-AXI-Lite and captures it in Questa waves.
+baseline. The Alex `dma_if_pcie` descriptor/RAM path is available through the
+Verilator QEMU adapter and is exercised by the guest driver.
 
 ## Checkout
 
@@ -39,6 +38,24 @@ submodule:
 git -C qemu checkout v11.0.3
 git -C qemu apply ../patches/qemu-pcie-vip.patch
 ```
+
+## Fast Ubuntu guest
+
+Buildroot is used for reproducible CI images, but is not required for manual
+bring-up. Download an official Ubuntu 22.04 cloud image instead; do not add
+the image to Git:
+
+```sh
+cd qemu/build
+wget -O ubuntu-jammy.qcow2 \
+  https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img
+qemu-img resize ubuntu-jammy.qcow2 8G
+```
+
+Boot it by replacing `guest.qcow2` with `ubuntu-jammy.qcow2` in the QEMU
+commands below. Use a cloud-init `seed.img` that creates the `ubuntu` user.
+The existing prepared `guest.qcow2` remains the quickest option because it
+already contains `pcie-vip-pcimem`, `pcie-vip-run`, and the matching driver.
 
 ## Questa QEMU/MMIO run
 
@@ -70,6 +87,20 @@ sudo /usr/local/bin/pcie-vip-pcimem 0000:00:03.0 write 0x14 32 0xdeadbeef
 sudo /usr/local/bin/pcie-vip-pcimem 0000:00:03.0 read 0x14 32
 sudo /usr/local/bin/pcie-vip-run
 ```
+
+The descriptor DMA test is run through the live Verilator adapter:
+
+```sh
+VERILATOR_TRACE=1 \
+PCIE_VIP_VCD=/tmp/pcie-vip-verilator.vcd \
+make -C rtl/alex qemu_verilator
+```
+
+Start QEMU with
+`-device 'pcie-vip,socket=/tmp/pcie-vip-verilator.sock,timeout-ms=5000'`,
+then run `sudo /usr/local/bin/pcie-vip-run` in the guest. The expected output
+is `PCIE-VIP DMA/MSI-X PASS`; inspect the resulting VCD with
+`gtkwave /tmp/pcie-vip-verilator.vcd`.
 
 The Questa waveform is `/tmp/pcie-vip-alex-questa.wlf`. Important wave
 hierarchies are `sim:/mini_ics_alex_tb/dut/axil_master_inst/*`,

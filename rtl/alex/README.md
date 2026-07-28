@@ -63,6 +63,54 @@ The bring-up top keeps the deterministic DMA sequence enabled while the
 `dma_if_pcie` descriptor/RAM path is being connected; MMIO is now
 QEMU-to-TLP-to-Alex-AXI-Lite.
 
+## Full QEMU + Verilator host path
+
+`run_qemu_verilator.sh` provides a live host-side path without Questa DPI.
+Its C++ harness owns `MiniIcsServer`, converts Mini-ICS MMIO messages into
+the wrapper's TLP BFM inputs, and runs the Alex AXI-Lite endpoint under
+Verilator 4.x or newer. Start it before QEMU:
+
+```sh
+make -C rtl/alex qemu_verilator
+```
+
+In another terminal launch QEMU with:
+
+```sh
+-device 'pcie-vip,socket=/tmp/pcie-vip-verilator.sock,timeout-ms=5000'
+```
+
+To capture the live QEMU/Alex DMA signals, enable Verilator tracing before
+starting the adapter.  This uses the Verilator-4-compatible VCD backend:
+
+```sh
+VERILATOR_TRACE=1 \
+PCIE_VIP_VCD=/tmp/pcie-vip-verilator.vcd \
+make -C rtl/alex qemu_verilator
+```
+
+After the guest test prints `PCIE-VIP DMA/MSI-X PASS`, open the waveform with:
+
+```sh
+gtkwave /tmp/pcie-vip-verilator.vcd
+```
+
+Useful scopes include `alex_qemu_verilator_top.dut`,
+`alex_qemu_verilator_top.dma_engine`, and the AXI-Lite signals under
+`alex_qemu_verilator_top.dut.axil_slave_model`.
+
+BAR reads and writes therefore travel QEMU → Mini-ICS → TLP BFM → Alex
+`pcie_axil_master_minimal` → AXI-Lite register block. The guest regression
+continues to use the deterministic DMA/MSI-X callback; connecting
+`dma_if_pcie` and its descriptor RAM is the next DMA milestone.
+
+The generic descriptor control plane is also present at BAR0 offsets
+`0x1040`–`0x105c`: descriptor/completion base addresses, ring count and
+tail, status, and control. Descriptors are 32-byte little-endian records;
+completion records are 16 bytes. The Verilator Mini-ICS harness services
+those records with QEMU's DMA requests and raises MSI-X vector 0 for an
+interrupt-flagged descriptor.
+
 ## Verilator
 
 The pure-RTL Alex path has a simulator-independent Verilator runner.  It
@@ -83,4 +131,19 @@ For an FST waveform, set `VERILATOR_TRACE=1`; the runner writes
 `rtl/alex/alex_verilator.fst`.  This is the RTL-level Verilator milestone.
 The live QEMU socket path remains the Questa path until a compiled-C++
 Mini-ICS DPI binding is added; Verilator cannot consume Questa's `-sv_lib`
-shared library directly.
+shared library directly.  For the host-side Verilator adapter, use the
+`run_qemu_verilator.sh` path above.
+
+For a host-only sandbox check (no Linux guest image required), build the
+adapter and run the orchestrator against a patched QEMU binary:
+
+```sh
+QEMU_VERILATOR_BUILD_ONLY=1 make -C rtl/alex qemu_verilator
+python3 scripts/ci/qemu_verilator_sandbox.py \
+  qemu/build/qemu-system-x86_64 \
+  rtl/alex/build/qemu_verilator/Valex_qemu_verilator_top
+```
+
+The sandbox starts and cleans up the adapter, drives QEMU through QMP, and
+checks that PCI ID `1234:11e9` enumerates. Its adapter log is written to
+`/tmp/pcie-vip-verilator-sandbox.log`.

@@ -2,6 +2,13 @@
 #include "Valex_verilator_compat_tb.h"
 #include "verilated.h"
 
+// Verilator 4.x emits a reference to this legacy timestamp callback when
+// compiling SystemVerilog that uses $time, even without SystemC enabled.
+double sc_time_stamp()
+{
+    return 0.0;
+}
+
 int main(int argc, char **argv)
 {
     Verilated::commandArgs(argc, argv);
@@ -13,20 +20,16 @@ int main(int argc, char **argv)
     // bring-up test, then release reset before running the self-checking FSM.
     for (int i = 0; i < 4; ++i) {
         top->eval();
-        Verilated::timeInc(1);
         top->clk = 1;
         top->eval();
-        Verilated::timeInc(1);
         top->clk = 0;
     }
     top->rst = 0;
     while (!Verilated::gotFinish()) {
         top->clk = 1;
         top->eval();
-        Verilated::timeInc(1);
         top->clk = 0;
         top->eval();
-        Verilated::timeInc(1);
     }
 
     top->final();

@@ -35,8 +35,12 @@ args=(
     --top-module alex_verilator_compat_tb
     --Mdir "${BUILD_DIR}"
     "${VERILOG_PCIE}/pcie_axil_master_minimal.v"
+    "${VERILOG_PCIE}/dma_if_pcie.v"
+    "${VERILOG_PCIE}/dma_if_pcie_rd.v"
+    "${VERILOG_PCIE}/dma_if_pcie_wr.v"
     "${SCRIPT_DIR}/axi_lite_slave_model.sv"
     "${SCRIPT_DIR}/pcie_vip_alex_endpoint.sv"
+    "${SCRIPT_DIR}/pcie_vip_dma_if_pcie.sv"
     "${SCRIPT_DIR}/verilator_compat_tb.sv"
     "${SCRIPT_DIR}/verilator_main.cpp"
 )

@@ -22,8 +22,12 @@ vlib work
 vlog -sv \
   "${MINI_DIR}/dpi/mini_ics_dpi_pkg.sv" \
   "${ROOT_DIR}/third_party/verilog-pcie/rtl/pcie_axil_master_minimal.v" \
+  "${ROOT_DIR}/third_party/verilog-pcie/rtl/dma_if_pcie.v" \
+  "${ROOT_DIR}/third_party/verilog-pcie/rtl/dma_if_pcie_rd.v" \
+  "${ROOT_DIR}/third_party/verilog-pcie/rtl/dma_if_pcie_wr.v" \
   "${SCRIPT_DIR}/axi_lite_slave_model.sv" \
   "${SCRIPT_DIR}/pcie_vip_alex_endpoint.sv" \
+  "${SCRIPT_DIR}/pcie_vip_dma_if_pcie.sv" \
   "${SCRIPT_DIR}/mini_ics_alex_tb.sv"
 
 vsim -c -voptargs="+acc" \
