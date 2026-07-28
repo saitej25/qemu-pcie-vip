@@ -130,4 +130,51 @@ module pcie_vip_dma_if_pcie #(
         .rcb_128b(1'b0), .requester_id(16'd0), .max_read_request_size(3'd0),
         .max_payload_size(3'd0)
     );
+
+`ifndef SYNTHESIS
+    // Transaction-level trace points.  These are intentionally in the
+    // wrapper so they are visible in both Questa and Verilator runs.
+    always @(posedge clk) begin
+        if (!rst) begin
+            if (read_desc_valid && read_desc_ready)
+                $display("[RTL-DMA][%0t] READ_DESC host=%016h ram=%08h len=%0d tag=%02h",
+                         $time, read_desc_pcie_addr, read_desc_ram_addr,
+                         read_desc_len, read_desc_tag);
+            if (write_desc_valid && write_desc_ready)
+                $display("[RTL-DMA][%0t] WRITE_DESC host=%016h ram=%08h len=%0d tag=%02h",
+                         $time, write_desc_pcie_addr, write_desc_ram_addr,
+                         write_desc_len, write_desc_tag);
+            if (tx_rd_req_tlp_valid && tx_rd_req_tlp_ready)
+                $display("[RTL-TLP][%0t] MRd hdr=%032h addr=%016h len_dw=%0d tag=%02h",
+                         $time, tx_rd_req_tlp_hdr,
+                         {tx_rd_req_tlp_hdr[63:34], 2'b00},
+                         tx_rd_req_tlp_hdr[105:96], tx_rd_req_tlp_hdr[79:72]);
+            if (tx_wr_req_tlp_valid && tx_wr_req_tlp_ready)
+                $display("[RTL-TLP][%0t] MWr hdr=%032h data=%064h strb=%02h",
+                         $time, tx_wr_req_tlp_hdr, tx_wr_req_tlp_data,
+                         tx_wr_req_tlp_strb);
+            if (rx_cpl_tlp_valid && rx_cpl_tlp_ready)
+                $display("[RTL-TLP][%0t] CplD hdr=%032h data=%064h err=%x",
+                         $time, rx_cpl_tlp_hdr, rx_cpl_tlp_data,
+                         rx_cpl_tlp_error);
+            if (read_status_valid)
+                $display("[RTL-DMA][%0t] READ_STATUS tag=%02h error=%x",
+                         $time, read_status_tag, read_status_error);
+            if (write_status_valid)
+                $display("[RTL-DMA][%0t] WRITE_STATUS tag=%02h error=%x",
+                         $time, write_status_tag, write_status_error);
+            for (s = 0; s < RAM_SEG_COUNT; s = s + 1) begin
+                if (ram_rd_cmd_valid[s] && ram_rd_cmd_ready[s])
+                    $display("[RTL-RAM][%0t] READ seg=%0d addr=%08h",
+                             $time, s, ram_rd_cmd_addr[s*RAM_SEG_ADDR_WIDTH +: RAM_SEG_ADDR_WIDTH]);
+                if (ram_wr_cmd_valid[s] && ram_wr_cmd_ready[s])
+                    $display("[RTL-RAM][%0t] WRITE seg=%0d addr=%08h data=%064h be=%08h",
+                             $time, s,
+                             ram_wr_cmd_addr[s*RAM_SEG_ADDR_WIDTH +: RAM_SEG_ADDR_WIDTH],
+                             ram_wr_cmd_data[s*TLP_DATA_WIDTH +: TLP_DATA_WIDTH],
+                             ram_wr_cmd_be[s*RAM_SEG_BE_WIDTH +: RAM_SEG_BE_WIDTH]);
+            end
+        end
+    end
+`endif
 endmodule

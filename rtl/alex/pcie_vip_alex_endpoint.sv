@@ -136,4 +136,19 @@ module pcie_vip_alex_endpoint #(
             msix_valid <= 1'b0;
         end
     end
+
+`ifndef SYNTHESIS
+    always @(posedge clk) begin
+        if (!rst) begin
+            if (rx_req_tlp_valid && rx_req_tlp_ready)
+                $display("[RTL-TLP][%0t] RX_REQ hdr=%032h data=%064h",
+                         $time, rx_req_tlp_hdr, rx_req_tlp_data);
+            if (tx_cpl_tlp_valid && tx_cpl_tlp_ready)
+                $display("[RTL-TLP][%0t] TX_CPL hdr=%032h data=%064h",
+                         $time, tx_cpl_tlp_hdr, tx_cpl_tlp_data);
+            if (msix_valid)
+                $display("[RTL-MSIX][%0t] vector=%0d", $time, msix_vector);
+        end
+    end
+`endif
 endmodule
